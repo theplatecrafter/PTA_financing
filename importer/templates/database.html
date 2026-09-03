@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Edit database</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+
+<body>
+    <header class="topbar"><a class="brand" href="{{ url_for('index') }}">Import Manager</a>
+        <div class="actions">
+            <form method="post" action="{{ url_for('execute') }}"><button class="primary">Execute to Beancount</button>
+            </form>
+            <form method="post" action="{{ url_for('sync') }}"><button>Sync/import with Beancount</button></form>
+        </div>
+    </header>
+    <div class="shell">
+        <nav class="tabs">
+            {% for key, label in [('search','Search'),('review','Flip through and resolve
+            pending'),('sync','Export/Import from Beancount'),('manual','Manually enter
+            posts/transaction'),('accounts','Accounts'),('database','Edit database'),('files','Edit beancount
+            files'),('stats','Stats')] %}<a class="tab {% if tab == key %}active{% endif %}"
+                href="{{ url_for('index', tab=key) }}">{{ label }}</a>{% endfor %}
+        </nav>
+        <main>
+            {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div
+                class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+            <section class="panel database-panel">
+                <p class="eyebrow">SQLITE STATE</p>
+                <h1>Edit database</h1>
+                <p class="muted">Edit, add, duplicate, or delete importer state directly. Select multiple rows for bulk
+                    actions.</p>
+                <div class="table-tabs">{% for name in tables %}<a
+                        class="table-tab {% if name == table %}active{% endif %}"
+                        href="{{ url_for('index', tab='database', table=name) }}">{{ name }}</a>{% endfor %}</div>
+                <form id="bulk-actions" method="post">
+                    <div class="database-toolbar"><button formaction="{{ url_for('database_delete', table=table) }}"
+                            onclick="return confirm('Delete the selected database rows? This cannot be undone.')">Delete
+                            selected</button><button
+                            formaction="{{ url_for('database_duplicate', table=table) }}">Duplicate
+                            selected</button><span class="muted">Primary key: {{ primary_keys|join(', ') or 'none'
+                            }}</span></div>
+                </form>
+                <div class="database-table-wrap">
+                    <table class="database-table">
+                        <thead>
+                            <tr>
+                                <th>Select</th>{% for column in columns %}<th>{{ column }}</th>{% endfor %}<th>Save</th>
+                            </tr>
+                        </thead>
+                        <tbody>{% for row in rows %}{% set row_form = 'row-form-' ~ loop.index %}<tr>
+                                <td><input form="bulk-actions" type="checkbox" name="selected"
+                                        value='{{ row_keys(row, primary_keys)|tojson|forceescape }}'></td>{% for column
+                                in columns %}<td>{% if loop.first %}<form id="{{ row_form }}" method="post"
+                                        action="{{ url_for('database_update', table=table) }}"></form>{% endif %}{% if
+                                    column in primary_keys %}<input form="{{ row_form }}" type="hidden"
+                                        name="original_{{ column }}" value="{{ row[column] or '' }}">{% endif %}<input
+                                        form="{{ row_form }}" name="{{ column }}"
+                                        value="{{ row[column] if row[column] is not none else '' }}" {% if column in
+                                        primary_keys %}readonly{% endif %}></td>{% endfor %}<td class="row-action">
+                                    <button form="{{ row_form }}" class="small-button">Save</button></td>
+                            </tr>{% else %}<tr>
+                                <td colspan="{{ columns|length + 2 }}" class="empty">No rows in this table.</td>
+                            </tr>{% endfor %}</tbody>
+                    </table>
+                </div>
+                <form class="database-add" method="post" action="{{ url_for('database_add', table=table) }}">
+                    <h2>Add row to {{ table }}</h2>
+                    <div class="add-grid">{% for column in columns %}<label>{{ column }}<input name="{{ column }}"
+                                placeholder="{% if column in primary_keys %}Required key{% else %}Optional{% endif %}"></label>{%
+                        endfor %}</div><button class="primary">Add row</button>
+                </form>
+            </section>
+        </main>
+    </div>
+</body>
+
+</html>

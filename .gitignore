@@ -1,0 +1,8 @@
+/__pycache__
+/importer/__pycache__
+/venv
+/state
+
+accounts.beancount
+posts.beancount
+main.beancount

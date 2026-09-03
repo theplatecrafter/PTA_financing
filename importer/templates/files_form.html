@@ -1,0 +1,9 @@
+<section class="panel">
+    <p class="eyebrow">DIRECT FILE EDITOR</p>
+    <h1>Edit Beancount files</h1>
+    <form method="post" action="{{ url_for('edit_files') }}" class="file-editor"><label>accounts.beancount<textarea
+                name="accounts_text"
+                spellcheck="false">{{ accounts_text }}</textarea></label><label>posts.beancount<textarea
+                name="posts_text" spellcheck="false">{{ posts_text }}</textarea></label><button class="primary">Save
+            files</button></form>
+</section>

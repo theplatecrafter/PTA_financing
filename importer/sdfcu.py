@@ -1,0 +1,153 @@
+# importer/sdfcu.py
+
+import csv
+import hashlib
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+
+from .common import ParsedRecord
+
+
+def parse(path: Path) -> list[ParsedRecord]:
+    """
+    Parse an SDFCU transaction CSV into normalized ParsedRecords.
+    """
+
+    records: list[ParsedRecord] = []
+
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+
+        for row_number, row in enumerate(reader, start=2):
+            records.append(
+                parse_row(
+                    row=row,
+                    source_file=path,
+                    source_row=row_number,
+                )
+            )
+
+    return records
+
+
+def parse_row(
+    row: dict[str, str],
+    source_file: Path,
+    source_row: int,
+) -> ParsedRecord:
+
+    transaction_id = clean(row.get("Transaction ID"))
+
+    transaction_date = parse_date(row["Date"])
+
+    amount = parse_money(row.get("Amount"))
+    balance = parse_money(row.get("Balance"))
+
+    record_id = make_record_id(
+        transaction_id=transaction_id,
+        row=row,
+    )
+
+    return ParsedRecord(
+        record_id=record_id,
+        source="sdfcu",
+        source_file=source_file,
+        source_row=source_row,
+        source_id=transaction_id,
+
+        date=transaction_date,
+        time=None,
+        completed_at=None,
+
+        description=clean(row.get("Description")),
+        amount=amount,
+        currency="USD",
+
+        balance=balance,
+        balance_currency="USD",
+
+        counterparty=None,
+        category=clean(row.get("Category")),
+        payment_method=None,
+        reference=clean(row.get("Check Number")),
+        note=None,
+        tags=parse_tags(row.get("Tags")),
+
+        payment_type=None,
+        installment_number=None,
+        payment_amount=None,
+
+        source_amount=None,
+        source_currency=None,
+        target_amount=None,
+        target_currency=None,
+
+        exchange_rate=None,
+        conversion_date=None,
+
+        fee_amount=None,
+        fee_currency=None,
+
+        raw_data=dict(row),
+    )
+
+
+def clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    value = value.strip()
+
+    return value if value else None
+
+
+def parse_date(value: str) -> date:
+    return datetime.strptime(
+        value.strip(),
+        "%m/%d/%y",
+    ).date()
+
+
+def parse_money(value: str | None) -> Decimal | None:
+    value = clean(value)
+
+    if value is None:
+        return None
+
+    value = value.replace("$", "").replace(",", "")
+
+    return Decimal(value)
+
+
+def parse_tags(value: str | None) -> list[str]:
+    value = clean(value)
+
+    if value is None:
+        return []
+
+    return [
+        tag.strip()
+        for tag in value.split(",")
+        if tag.strip()
+    ]
+
+
+def make_record_id(
+    transaction_id: str | None,
+    row: dict[str, str],
+) -> str:
+
+    if transaction_id:
+        return f"sdfcu:{transaction_id}"
+
+    raw = "\x1f".join(
+        f"{key}={row.get(key, '')}"
+        for key in sorted(row)
+    )
+
+    digest = hashlib.sha256(
+        raw.encode("utf-8")
+    ).hexdigest()
+
+    return f"sdfcu:{digest}"

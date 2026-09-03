@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Import Manager</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+
+<body>
+    <header class="topbar"><a class="brand" href="{{ url_for('index') }}">Import Manager</a>
+        <div class="actions">
+            <form method="post" action="{{ url_for('execute') }}"><button class="primary">Execute to Beancount</button>
+            </form>
+            <form method="post" action="{{ url_for('sync') }}"><button>Sync/import with Beancount</button></form>
+        </div>
+    </header>
+    <div class="shell">
+        <nav class="tabs">
+            {% for key, label in [('search','Search'),('review','Flip through and resolve
+            pending'),('sync','Export/Import from Beancount'),('manual','Manually enter
+            posts/transaction'),('accounts','Accounts'),('database','Edit database'),('files','Edit beancount
+            files'),('stats','Stats')] %}<a class="tab {% if tab == key %}active{% endif %}"
+                href="{{ url_for('index', tab=key) }}">{{ label
+                }}</a>{% endfor %}
+        </nav>
+        <main>
+            {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div
+                class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+            {% if tab == 'accounts' %}
+            <section class="panel">
+                <p class="eyebrow">ACCOUNTING STRUCTURE</p>
+                <h1>Accounts</h1>
+                <p class="muted">Create any colon-separated hierarchy. Parent directories can be added later.</p>
+                <div class="account-layout">
+                    <div>{% for account in accounts %}<div class="account-row"
+                            style="--depth: {{ account['name'].count(':') }}">
+                            <form class="account-edit" method="post" action="{{ url_for('save_account') }}"><input
+                                    type="hidden" name="original_name" value="{{ account['name'] }}"><label>Name<input
+                                        name="name" value="{{ account['name'] }}" required></label><label>Open
+                                    date<input type="date" name="open_date" value="{{ account['open_date'] }}"
+                                        required></label><label>Currency<input name="currency"
+                                        value="{{ account['currency'] or '' }}"></label><label>Description<input
+                                        name="description"
+                                        value="{{ account['description'] }}"></label><button>Save</button></form>
+                            <form method="post" action="{{ url_for('remove_account') }}"
+                                onsubmit="return confirm('Delete this account?')"><input type="hidden" name="name"
+                                    value="{{ account['name'] }}"><button title="Delete account">Delete</button></form>
+                        </div>{% else %}<p class="empty">No accounts yet.</p>{% endfor %}</div>
+                    <form class="form-card account-add-row" method="post" action="{{ url_for('save_account') }}">
+                        <h2>Add account</h2><label>Full account path<input name="name" placeholder="Assets:Japan:PayPay"
+                                required></label><label>Open date<input type="date" name="open_date"
+                                required></label><label>Currency<input name="currency"
+                                placeholder="JPY"></label><label>Description<textarea name="description"
+                                rows="3"></textarea></label><button class="primary">Save account</button>
+                    </form>
+                </div>
+            </section>
+            {% elif tab == 'sync' %}
+            <section class="panel">
+                <p class="eyebrow">CONTROLLED DATA FLOW</p>
+                <h1>Export and import</h1>
+                <div class="sync-grid">
+                    <div class="form-card">
+                        <h2>CSV import</h2>
+                        <form method="post" action="{{ url_for('import_csv') }}" enctype="multipart/form-data">
+                            <label>Parser<select name="source">{% for source in
+                                    ['paypay','sdfcu','sumitomo','sumitomo_credit_card','wise'] %}<option>{{ source }}
+                                    </option>{% endfor %}</select></label><label>CSV file<input type="file" name="file"
+                                    accept=".csv" required></label><button class="primary">Import into database</button>
+                        </form>
+                    </div>
+                    <div class="form-card">
+                        <h2>Beancount direction</h2>
+                        <p><strong>Execute to Beancount</strong> writes resolved database transactions.
+                            <strong>Sync/import with Beancount</strong> reads existing declarations and importer
+                            markers.
+                        </p>
+                        <p class="muted">Startup never synchronizes automatically.</p>
+                        <div class="big-actions">
+                            <form method="post" action="{{ url_for('execute') }}"><button class="primary">Execute to
+                                    Beancount</button></form>
+                            <form method="post" action="{{ url_for('sync') }}"><button>Sync/import with
+                                    Beancount</button></form>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            {% elif tab == 'manual' %}
+            <section class="panel manual-panel">
+                <p class="eyebrow">NEW DATABASE RECORD</p>
+                <h1>Manually enter a transaction</h1>
+                <p class="muted">Enter the useful transaction details below. Identity and source provenance are
+                    generated automatically.</p>
+                <form class="form-card manual-form" method="post" action="{{ url_for('manual') }}">
+                    <div class="manual-grid">{% for field, label, field_type in manual_fields %}<label>{{ label }}{% if
+                            field_type == 'textarea' %}<textarea name="{{ field }}" rows="3" {% if field=='raw_data'
+                                %}placeholder='{"key": "value"}' {% endif %}></textarea>{% else %}<input
+                                type="{{ field_type }}" name="{{ field }}" {% if field=='date' %}value="{{ today }}"
+                                required{% elif field=='source' %}value="manual" {% elif field=='source_file'
+                                %}value="manual" {% elif field=='source_row' %}value="0" {% endif %}>{% endif
+                            %}</label>{% endfor %}</div><button class="primary">Create draft</button>
+                </form>
+            </section>
+            {% elif tab == 'files' %}{% include 'files_form.html' %}
+            {% elif tab == 'stats' %}
+            <section class="panel">
+                <p class="eyebrow">DATABASE OVERVIEW</p>
+                <h1>Stats</h1>
+                <div class="stats">{% for value, label in [(records|length, 'Shown records'), (held|length, 'Held
+                    records'), (accounts|length, 'Accounts')] %}<div><strong>{{ value }}</strong><span>{{ label
+                            }}</span></div>{% endfor %}</div>
+            </section>
+            {% elif tab == 'review' %}
+            <section class="review-workspace">
+                <div class="review-linked">
+                    <p class="eyebrow">LINKED RECORDS</p>{% if linked_members %}<div class="linked-cards">{% for member
+                        in linked_members %}{% set member_payload = json.loads(member['payload']) %}<div
+                            class="linked-card"><strong>{{ member['source'] }}</strong><span>{{
+                                member['transaction_date'] }} · {{ member['description'] or 'No description'
+                                }}</span><b>{{ member['amount'] or '—' }} {{ member['currency'] or '' }}</b><small>row
+                                {{ member_payload.get('source_row', '—') }} · {{ member['record_id'] }}</small></div>{%
+                        endfor %}</div>
+                    <p class="same-event">↓ SAME EVENT ↓</p>
+                    <form method="post"
+                        action="{{ url_for('unlink_group', group_id=selected_group_id) }}">
+                        <button>Unlink</button></form>{% else %}<p class="muted">No linked source records yet.</p>{%
+                    endif %}
+                </div>
+                <div class="review-current">{% if selected %}{% set payload = json.loads(selected['payload']) %}<p
+                        class="eyebrow">CURRENT RECORD</p>
+                    <h1>{{ selected['source'] }}</h1>
+                    <div class="current-amount">{{ selected['amount'] or '—' }} {{ selected['currency'] or '' }}</div>
+                    <div class="current-facts"><strong>{{ selected['transaction_date'] }} {{ payload.get('time') or ''
+                            }}</strong><span>{{ selected['description'] or 'No description' }}</span><span>{{
+                            payload.get('counterparty') or 'No counterparty' }}</span><span>Source: {{
+                            selected['source'] }}</span><span>ID: {{ payload.get('source_id') or selected['record_id']
+                            }}</span></div>
+                    <details class="raw-details">
+                        <summary>View parsed source data</summary>
+                        <div class="source-details">{% for key, value in payload.items() %}{% if value is not none and
+                            value != '' and value != [] and value != {} %}<div><span>{{ key.replace('_',' ')
+                                    }}</span><strong>{{ value }}</strong></div>{% endif %}{% endfor %}</div>
+                    </details>
+                    <div class="review-accounting">
+                        <p class="eyebrow">ACCOUNTING</p>
+                        <form method="post" action="{{ url_for('save_record', record_id=selected['record_id']) }}">
+                            <input type="hidden" name="next_record" value="{{ next_record_id }}">
+                            <div id="review-postings">{% set saved = json.loads(selected['accounting_json']) if
+                                selected['accounting_json'] else [{}] %}{% for posting in saved %}<div class="posting">
+                                    <select name="posting_account">
+                                        <option value="">Choose account</option>{% for value, label in account_options
+                                        %}<option value="{{ value }}" {% if posting.get('account')==value %}selected{%
+                                            endif %}>{{ label }}</option>{% endfor %}
+                                    </select><input name="posting_amount" value="{{ posting.get('amount','') }}"
+                                        placeholder="Amount"><input name="posting_currency"
+                                        value="{{ posting.get('currency', selected['currency'] or '') }}"
+                                        placeholder="Currency"><button type="button" class="remove-posting" onclick="removePosting(this)">Remove</button></div>{% endfor %}</div><button type="button"
+                                    onclick="addPosting('review-postings', this)">+ Add posting</button>
+                            <div class="save-row"><button class="resolve" name="status"
+                                    value="resolved">Save as resolved</button><button name="status" value="pending">Save and keep pending</button><button name="status"
+                                    {% if not selected_group_id %}<button name="status" value="held">Hold</button>{% endif %}<button name="status" value="ignored">Ignore</button>
+                            </div>
+                        </form>
+                    </div>{% else %}<div class="empty-state">
+                        <h2>No pending records</h2>
+                    </div>{% endif %}
+                </div>
+                <aside class="review-held">
+                    <p class="eyebrow">HELD <span>({{ held|length }})</span></p>{% for item in held %}{% set
+                    held_payload = json.loads(item['payload']) %}<label class="held-card"><input type="checkbox"
+                            name="held_record" value="{{ item['record_id'] }}"><span><strong>{{ item['source']
+                                }}</strong><b>{{ item['amount'] or '—' }} {{ item['currency'] or '' }}</b><small>{{
+                                item['transaction_date'] }} · {{ item['description'] or 'No description'
+                                }}</small><small>{{ held_payload.get('counterparty') or '' }}</small></span></label>{%
+                    else %}<p class="muted">No held records.</p>{% endfor %}<form method="post"
+                        action="{{ url_for('link_record', record_id=selected['record_id']) if selected else '#' }}"
+                        id="held-link-form"><input type="hidden" name="next_record" value="{{ next_record_id }}"><input type="hidden" name="linked_record_id" id="held-link-value"><button
+                            type="submit" onclick="return collectHeld()">Link selected held</button></form>
+                </aside>
+            </section>
+            <footer class="review-footer"><a
+                    href="{{ url_for('index', tab='review', record=records[review_position-2]['record_id']) if review_position > 1 else '#' }}">Previous</a><span>{{
+                    review_position }} / {{ records|length }}</span><a
+                    href="{{ url_for('index', tab='review', record=records[review_position]['record_id']) if review_position < records|length else '#' }}">Next</a>
+            </footer>
+            {% else %}
+            <section class="workspace">
+                <div class="list-panel">
+                    <div class="list-heading">
+                        <p class="eyebrow">{% if tab == 'review' %}REVIEW QUEUE{% else %}RECORDS{% endif %}</p>
+                        <h1>{{ 'Pending records' if tab == 'review' else 'Search records' }}</h1>
+                        <form class="search" method="get"><input type="hidden" name="tab" value="{{ tab }}"><input
+                                name="q" value="{{ query }}" placeholder="Search all parsed record fields">{% if tab ==
+                            'search' %}<select name="status">
+                                <option value="all">All statuses</option>{% for item in
+                                ['pending','held','linked','resolved','synced','ignored'] %}<option value="{{ item }}"
+                                    {% if status==item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+                            </select>{% endif %}<button>Filter</button></form>
+                    </div>
+                    {% if tab == 'search' %}<form id="bulk-search-form" method="post" action="{{ url_for('save_records_bulk') }}"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}"></form><div class="bulk-select"><button type="button" onclick="toggleAllSearch()">Select all</button><span id="search-selection-count">0 selected</span></div>{% endif %}
+                    {% for record in records %}{% set payload = json.loads(record['payload']) %}<a
+                        class="record {% if selected and selected['record_id'] == record['record_id'] %}selected{% endif %}"
+                        href="{{ url_for('index', tab=tab, status=status, record=record['record_id'], q=query) }}"><span
+                            class="date">{% if tab == 'search' %}<input form="bulk-search-form" type="checkbox" name="selected_record_id" value="{{ record['record_id'] }}" onclick="handleSearchCheckbox(event, this)">{% endif %}{{ record['transaction_date'] }}<br>{{ payload.get('time','') }}</span><span
+                            class="record-main"><strong>{{ record['description'] or 'No description'
+                                }}</strong><small>{{ record['source'] }} · {{ payload.get('counterparty') or 'No
+                                counterparty' }}</small><small>{{ payload.get('payment_method') or '' }} {{
+                                payload.get('category') or '' }}</small></span><span class="amount">{{ record['amount']
+                            or '—' }} {{ record['currency'] or '' }}<small>{{ payload.get('balance') or '' }}
+                                balance</small></span><span class="status">{{ 'LINKED EVENT #' ~ record_groups[record['record_id']] if record['record_id'] in record_groups else record['status'] }}</span></a>{% else %}<p
+                        class="empty">No records match this view.</p>{% endfor %}
+                </div>
+                <div class="detail-panel">{% if tab == 'search' %}<div id="bulk-interpretation-panel" hidden>{% include 'bulk_interpretation.html' %}</div>{% endif %}<div id="single-interpretation-panel">{% if selected %}{% set payload = json.loads(selected['payload']) %}<p
+                        class="eyebrow">ACCOUNTING INTERPRETATION</p>
+                    <h2>{{ selected['description'] or selected['record_id'] }}</h2>
+                    <p class="muted">{{ selected['transaction_date'] }} · {{ selected['source'] }} ·
+                        <code>{{ selected['record_id'] }}</code>
+                    </p>
+                    {% if tab == 'search' and selected_group_id %}<div class="linked-cards search-linked-cards"><p class="eyebrow">LINKED RECORDS REPRESENTED</p>{% for member in linked_members %}{% set member_payload = json.loads(member['payload']) %}<div class="linked-card"><strong>{{ member['source'] }}</strong><span>{{ member['transaction_date'] }} · {{ member['description'] or 'No description' }}</span><b>{{ member['amount'] or '—' }} {{ member['currency'] or '' }}</b><small>{{ member['record_id'] }} · row {{ member_payload.get('source_row', '—') }}</small></div>{% endfor %}</div>{% endif %}
+                    <form method="post" action="{{ url_for('save_group', group_id=selected_group_id) if tab == 'search' and selected_group_id else url_for('save_record', record_id=selected['record_id']) }}">
+                        <input type="hidden" name="return_tab" value="search"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}">
+                        <h3>Postings</h3>
+                        <div id="search-postings">{% set saved = json.loads(selected['accounting_json']) if
+                            selected['accounting_json'] else [{}] %}{% for posting in saved %}<div class="posting">
+                                <select name="posting_account">
+                                    <option value="">Choose account</option>{% for value, label in account_options %}
+                                    <option value="{{ value }}" {% if posting.get('account')==value %}selected{% endif
+                                        %}>{{ label }}</option>{% endfor %}
+                                </select><input name="posting_amount" value="{{ posting.get('amount','') }}"
+                                    placeholder="Amount"><input name="posting_currency"
+                                    value="{{ posting.get('currency', selected['currency'] or '') }}"
+                                    placeholder="Currency"><button type="button" class="remove-posting" onclick="removePosting(this)">Remove</button>
+                            </div>{% endfor %}</div><button type="button" onclick="addPosting('search-postings', this)">+ Add posting</button>
+                        <div class="save-row"><button class="resolve" name="status" value="resolved">Save as
+                                resolved</button><button name="status" value="pending">Save and keep pending</button>{% if not (tab == 'search' and selected_group_id) %}<button name="status" value="held">Hold</button>{% endif %}<button name="status"
+                                value="ignored">Ignore</button></div>
+                    </form>
+                    <hr>
+                    <h3>Link with held records</h3>
+                    <form method="post" action="{{ url_for('link_record', record_id=selected['record_id']) }}">{% for
+                        item in held if item['record_id'] != selected['record_id'] %}{% set held_payload =
+                        json.loads(item['payload']) %}<label class="check"><input type="checkbox"
+                                name="linked_record_id" value="{{ item['record_id'] }}"><span><strong>{{
+                                    item['transaction_date'] }} · {{ item['description'] or item['record_id']
+                                    }}</strong><small>{{ item['source'] }} · {{ item['amount'] or '' }} {{
+                                    item['currency'] or '' }} · {{ held_payload.get('counterparty') or ''
+                                    }}</small></span></label>{% else %}<p class="muted">No held records available.</p>{%
+                        endfor %}<button>Link selected records</button></form>
+                    <p class="provenance">Source observations are retained. Linking creates one event group; it never
+                        deletes a record.</p>
+                    <div class="source-details">
+                        <h3>Parsed record</h3>{% for key, value in payload.items() %}{% if value is not none and value
+                        != '' and value != [] and value != {} %}<div><span>{{ key.replace('_',' ') }}</span><strong>{{
+                                value }}</strong></div>{% endif %}{% endfor %}
+                    </div>{% else %}{% if tab != 'search' %}<div class="empty-state"><span>◌</span><h2>Select a record</h2><p>Choose a record from the left to interpret or link it.</p></div>{% endif %}{% endif %}</div>
+                </div>
+            </section>
+            {% endif %}
+        </main>
+    </div>
+    <script>let lastSearchCheckbox = null; function addPosting(target, button) { const container = document.getElementById(target) || (button && button.closest('form') && button.closest('form').querySelector('[id$="postings"]')); if (!container) return; const source = container.querySelector('.posting'); if (!source) return; const row = source.cloneNode(true); row.querySelectorAll('input').forEach(i => i.value = ''); row.querySelectorAll('select').forEach(s => s.selectedIndex = 0); container.append(row) } function addBulkPosting(button) { addPosting('bulk-postings', button) } function removePosting(button) { const container = button.closest('[id$="postings"]'); const rows = container ? container.querySelectorAll('.posting') : []; if (rows.length > 1) button.closest('.posting').remove() } function collectHeld() { const form = document.getElementById('held-link-form'); form.querySelectorAll('input[name="linked_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="held_record"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'linked_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="linked_record_id"]') !== null } function handleSearchCheckbox(event, checkbox) { event.stopPropagation(); const boxes = [...document.querySelectorAll('input[name="selected_record_id"]')]; if (event.shiftKey && lastSearchCheckbox) { const start = boxes.indexOf(lastSearchCheckbox); const end = boxes.indexOf(checkbox); if (start !== -1 && end !== -1) boxes.slice(Math.min(start, end), Math.max(start, end) + 1).forEach(box => box.checked = checkbox.checked) } lastSearchCheckbox = checkbox; updateSelection() } function updateSelection() { const boxes = document.querySelectorAll('input[name="selected_record_id"]:checked'); const count = document.getElementById('search-selection-count'); if (count) count.textContent = boxes.length + ' selected'; const bulk = document.getElementById('bulk-interpretation-panel'); const single = document.getElementById('single-interpretation-panel'); if (bulk && single) { const hasSelection = boxes.length > 0; bulk.hidden = !hasSelection; single.hidden = hasSelection } } function toggleAllSearch() { const boxes = document.querySelectorAll('input[name="selected_record_id"]'); const shouldSelect = [...boxes].some(box => !box.checked); boxes.forEach(box => box.checked = shouldSelect); lastSearchCheckbox = null; updateSelection() } function collectSearchSelection(form) { form.querySelectorAll('input[name="selected_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="selected_record_id"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'selected_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="selected_record_id"]') !== null }</script>
+</body>
+
+</html>
