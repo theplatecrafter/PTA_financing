@@ -51,6 +51,7 @@ def parse_row(
         withdrawal=withdrawal,
         deposit=deposit,
     )
+    print(amount)
 
     foreign_amount = parse_money(row.get("海外出金金額"))
     foreign_currency = clean(row.get("通貨"))
@@ -167,6 +168,8 @@ def parse_money(value: str | None) -> Decimal | None:
     return Decimal(
         value.replace(",", "")
     )
+
+
 
 
 def determine_amount(

@@ -1,0 +1,17 @@
+<div class="page-heading"><div><p class="eyebrow">A LITTLE CLARITY, EVERY DAY</p><h1>Your finances, organized.</h1><p class="muted">Turn bank statements into a clear, balanced record of your money.</p></div><a class="button primary" href="{{ url_for('index', tab='review') }}">Start reviewing →</a></div>
+<div class="stats">
+  {% for status_key, label, note in [('pending','To review','Choose where the money went'),('resolved','Ready to export','Balanced and ready for your ledger'),('synced','Exported','Recorded in Beancount')] %}
+  <a href="{{ url_for('index',tab='search',status=status_key) }}"><span>{{ label }}</span><strong>{{ counts.get(status_key,0) }}</strong><small>{{ note }}</small></a>
+  {% endfor %}
+</div>
+<div class="overview-grid">
+<section class="panel"><p class="eyebrow">YOUR NEXT STEPS</p><h2>Keep the routine simple</h2>
+  <a class="step" href="{{ url_for('index',tab='sync') }}"><b>1</b><span><strong>Bring in your transactions</strong><small>Upload a CSV from your bank or payment app. Exact duplicates are skipped.</small></span><span>→</span></a>
+  <a class="step" href="{{ url_for('index',tab='review') }}"><b>2</b><span><strong>Review and categorize</strong><small>Accept suggestions, split expenses, or link two sides of a transfer.</small></span><span>→</span></a>
+  <a class="step" href="{{ url_for('index',tab='rules') }}"><b>3</b><span><strong>Let recurring work take care of itself</strong><small>Create rules for familiar transactions and learn from your decisions.</small></span><span>→</span></a>
+  <a class="step" href="{{ url_for('index',tab='sync') }}"><b>4</b><span><strong>Export when you are ready</strong><small>Write resolved transactions to your plain-text Beancount ledger.</small></span><span>→</span></a>
+</section>
+<section class="panel guide"><p class="eyebrow">PLAIN-TEXT ACCOUNTING, SIMPLIFIED</p><h2>Every transaction has two sides.</h2><p>A 25 USD grocery purchase decreases your bank account and increases your grocery expenses.</p><div class="example-posting"><span>Assets:Bank</span><b>−25 USD</b></div><div class="example-posting"><span>Expenses:Groceries</span><b>+25 USD</b></div><p class="balance-note">Together: 0 USD. That is a balanced transaction.</p><p class="muted">Transfers move money between your own accounts. Credit card payments reduce a liability; they are not a second expense.</p><details><summary>Understand the five account types</summary><p><b>Assets</b>: money and things you own.<br><b>Liabilities</b>: money you owe.<br><b>Income</b>: earnings, usually negative postings.<br><b>Expenses</b>: what you spend, usually positive postings.<br><b>Equity</b>: opening balances and adjustments.</p><p>Account paths use colons, such as <code>Expenses:Food:Groceries</code>. Open accounts on or before your earliest transaction.</p></details></section>
+</div>
+<div class="summary-strip"><span>{{ counts.values()|sum }} source records</span><a href="{{ url_for('index',tab='search',status='held') }}">{{ counts.get('held',0) }} on hold</a><span>{{ accounts|length }} accounts</span><a href="{{ url_for('index',tab='accounts') }}">Manage accounts →</a></div>
+

@@ -24,24 +24,33 @@ def _posting_lines(postings: list[dict[str, str]]) -> list[str]:
 
 
 def render_transaction(transaction_id: str, transaction_date: str, narration: str, postings: list[dict[str, str]], metadata: Iterable[tuple[str, str]] = ()) -> str:
+    narration = narration.replace("\\", "\\\\").replace("\n", " ").replace("\r", " ")
     lines = [f"; importer:{transaction_id}", f'{transaction_date} * "{narration.replace(chr(34), chr(39))}"']
     for key, value in metadata:
-        escaped = value.replace('"', "'")
+        escaped = value.replace("\\", "\\\\").replace("\n", " ").replace("\r", " ").replace('"', "'")
         lines.append(f'    {key}: "{escaped}"')
     lines.extend(_posting_lines(postings))
     lines.append("; importer:end")
     return "\n".join(lines) + "\n"
 
 
-def _replace_generated_blocks(text: str, blocks: dict[str, str]) -> str:
-    pattern = re.compile(r"(?ms)^; importer:(?:record|group):(?P<key>[^\n]+)\n.*?^; importer:end\n")
-    seen: set[str] = set()
-    def replace(match: re.Match[str]) -> str:
+def _replace_generated_blocks(text: str, blocks: dict[str, str], owned=None) -> str:
+    # Complete identities prevent group:1 and record:1 from colliding.
+    pattern = re.compile(r"(?ms)^; importer:(?P<key>[^\n]+)\n.*?^; importer:end(?:\n|$)")
+    seen = set()
+    owned = set(owned or blocks)
+    def replace(match):
         key = match.group("key")
+        if key not in blocks and "record:" + key in owned:
+            key = "record:" + key
         if key in blocks:
+            if key in seen:
+                return ""
             seen.add(key)
             return blocks[key]
-        return match.group(0)
+        source_ids = re.findall(r'^    source_record(?:_\d+)?: "([^"]+)"', match.group(0), re.MULTILINE)
+        obsolete_group = key.startswith("group:") and any("record:" + rid in owned for rid in source_ids)
+        return "" if key in owned or obsolete_group else match.group(0)
     result = pattern.sub(replace, text)
     additions = [blocks[key] for key in blocks if key not in seen]
     if additions:
@@ -52,14 +61,21 @@ def _replace_generated_blocks(text: str, blocks: dict[str, str]) -> str:
 def export_accounts(db_path: Path, accounts_path: Path) -> int:
     accounts = database.get_accounts(db_path)
     existing = accounts_path.read_text(encoding="utf-8") if accounts_path.exists() else ""
-    lines = existing.splitlines()
-    non_open = [line for line in lines if not OPEN_RE.match(line)]
-    generated = []
+    declarations = {}
     for account in accounts:
         currency = f" {account['currency']}" if account["currency"] else ""
-        generated.append(f"{account['open_date']} open {account['name']}{currency}")
-    content = "\n".join(generated + [line for line in non_open if line.strip()])
-    accounts_path.write_text((content.rstrip() + "\n") if content else "", encoding="utf-8")
+        declarations[account["name"]] = f"{account['open_date']} open {account['name']}{currency}"
+    lines, seen = [], set()
+    for line in existing.splitlines():
+        match = OPEN_RE.match(line)
+        if match and match[2] in declarations:
+            comment = " ;" + line.split(";", 1)[1] if ";" in line else ""
+            lines.append(declarations[match[2]] + comment)
+            seen.add(match[2])
+        else:
+            lines.append(line)
+    lines.extend(value for name, value in declarations.items() if name not in seen)
+    accounts_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return len(accounts)
 
 
@@ -71,7 +87,7 @@ def _record_block(row: object) -> tuple[str, str] | None:
     if not postings:
         return None
     metadata = (("source_record", row["record_id"]),)
-    return row["record_id"], render_transaction(row["record_id"], row["transaction_date"], row["description"] or row["record_id"], postings, metadata)
+    return "record:" + row["record_id"], render_transaction("record:" + row["record_id"], row["transaction_date"], row["description"] or row["record_id"], postings, metadata)
 
 
 def export_posts(db_path: Path, posts_path: Path) -> list[str]:
@@ -83,6 +99,7 @@ def export_posts(db_path: Path, posts_path: Path) -> list[str]:
         group_rows = db.execute("SELECT DISTINCT group_id FROM event_members").fetchall()
     for group_row in group_rows:
         members = database.get_group_members(db_path, group_row[0])
+        grouped.update(member["record_id"] for member in members)
         if not members or any(member["status"] not in ("resolved", "synced") or not member["accounting_json"] for member in members):
             continue
         first = members[0]
@@ -100,11 +117,17 @@ def export_posts(db_path: Path, posts_path: Path) -> list[str]:
             blocks[rendered[0]] = rendered[1]
             exported.append(row["record_id"])
     existing = posts_path.read_text(encoding="utf-8") if posts_path.exists() else ""
-    posts_path.write_text(_replace_generated_blocks(existing, blocks), encoding="utf-8")
+    posts_path.write_text(_replace_generated_blocks(existing, blocks, {"record:" + r["record_id"] for r in rows} | {f"group:{r[0]}" for r in group_rows}), encoding="utf-8")
     return exported
 
 
 def export_all(db_path: Path, accounts_path: Path, posts_path: Path) -> list[str]:
+    for row in database.list_records(db_path, "all"):
+        if row["status"] in ("resolved", "synced"):
+            try:
+                database.validate_postings(db_path, __import__("json").loads(row["accounting_json"] or "[]"), row["transaction_date"])
+            except ValueError as error:
+                raise ValueError(f"{row['description'] or row['record_id']}: {error}")
     export_accounts(db_path, accounts_path)
     return export_posts(db_path, posts_path)
 
@@ -122,8 +145,12 @@ def import_beancount(db_path: Path, accounts_path: Path, posts_path: Path) -> tu
                 account_count += 1
     record_ids: set[str] = set()
     if posts_path.exists():
-        record_ids = set(MARKER_RE.findall(posts_path.read_text(encoding="utf-8")))
+        text = posts_path.read_text(encoding="utf-8")
+        # Metadata works for legacy records and grouped events alike.
+        record_ids.update(re.findall(r'^    source_record(?:_\d+)?: "([^"]+)"', text, re.MULTILINE))
+        record_ids.update(re.findall(r'^; importer:record:(.+)$', text, re.MULTILINE))
+    found = 0
     with database.connect(db_path) as db:
         for record_id in record_ids:
-            db.execute("UPDATE records SET status='synced', synced_at=COALESCE(synced_at, datetime('now')) WHERE record_id=?", (record_id,))
-    return account_count, len(record_ids)
+            found += db.execute("UPDATE records SET status='synced', synced_at=COALESCE(synced_at, datetime('now')) WHERE record_id=? AND status IN ('resolved','synced')", (record_id,)).rowcount
+    return account_count, found

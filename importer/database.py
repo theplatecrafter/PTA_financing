@@ -11,9 +11,17 @@ from typing import Any, Iterable
 STATUSES = ("pending", "held", "linked", "resolved", "synced", "ignored")
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
@@ -171,6 +179,11 @@ def get_record(path: Path, record_id: str) -> sqlite3.Row | None:
 def update_record(path: Path, record_id: str, status: str, accounting: list[dict[str, str]] | None) -> None:
     if status not in STATUSES:
         raise ValueError("Unknown record status")
+    if status == "resolved":
+        row = get_record(path, record_id)
+        if not row:
+            raise ValueError("This record no longer exists.")
+        validate_postings(path, accounting, row["transaction_date"])
     accounting_json = json.dumps(accounting, ensure_ascii=False) if accounting is not None else None
     with connect(path) as db:
         db.execute(
@@ -189,9 +202,11 @@ def append_accounting(path: Path, record_ids: list[str], posting_specs: list[dic
             row = db.execute("SELECT accounting_json FROM records WHERE record_id=?", (record_id,)).fetchone()
             if not row:
                 raise ValueError(f"Record does not exist: {record_id}")
+            if db.execute("SELECT 1 FROM event_members WHERE record_id=?", (record_id,)).fetchone():
+                raise ValueError("Review linked events individually to keep their postings consistent.")
             existing = json.loads(row[0]) if row[0] else []
             if status in ('resolved', 'pending'):
-                record = db.execute("SELECT amount, currency FROM records WHERE record_id=?", (record_id,)).fetchone()
+                record = db.execute("SELECT amount, currency, transaction_date FROM records WHERE record_id=?", (record_id,)).fetchone()
                 amount = Decimal(record[0]) if record[0] is not None else None
                 postings = []
                 for spec in posting_specs:
@@ -199,6 +214,8 @@ def append_accounting(path: Path, record_ids: list[str], posting_specs: list[dic
                         raise ValueError(f"Record has no amount: {record_id}")
                     value = abs(amount) if spec.get("sign") == "positive" else -abs(amount)
                     postings.append({"account": spec["account"], "amount": str(value), "currency": spec.get("currency") or record[1] or ""})
+                if status == 'resolved':
+                    validate_postings(path, existing + postings, record[2])
                 accounting_json = json.dumps(existing + postings, ensure_ascii=False)
             else:
                 accounting_json = row[0]
@@ -251,6 +268,11 @@ def get_group_id(path: Path, record_id: str) -> int | None:
 def update_group(path: Path, group_id: int, status: str, accounting: list[dict[str, str]] | None) -> None:
     if status not in STATUSES:
         raise ValueError("Unknown record status")
+    if status == "resolved":
+        members = get_group_members(path, group_id)
+        if not members:
+            raise ValueError("This event no longer exists.")
+        validate_postings(path, accounting, min(r["transaction_date"] for r in members))
     accounting_json = json.dumps(accounting, ensure_ascii=False) if accounting is not None else None
     with connect(path) as db:
         db.execute("UPDATE event_groups SET status=?, synced_at=NULL WHERE group_id=?", (status, group_id))
@@ -276,13 +298,23 @@ def get_accounts(path: Path) -> list[sqlite3.Row]:
 
 def save_account(path: Path, name: str, currency: str, description: str, open_date: str | None = None, original_name: str | None = None) -> None:
     name = ":".join(part.strip() for part in name.split(":") if part.strip())
-    if not name or any(not part.replace("-", "").isalnum() for part in name.split(":")):
-        raise ValueError("Account names must be colon-separated words")
-    if not open_date:
-        open_date = datetime.now().date().isoformat()
+    from .validation import ACCOUNT, CURRENCY
+    if not ACCOUNT.fullmatch(name):
+        raise ValueError("Use a Beancount account path such as Expenses:Food:Groceries.")
+    currency = ",".join(part.strip().upper() for part in currency.split(",") if part.strip())
+    if currency and any(not CURRENCY.fullmatch(part) for part in currency.split(",")):
+        raise ValueError("Use currency codes separated by commas, such as USD,JPY.")
+    open_date = open_date or datetime.now().date().isoformat()
+    try:
+        datetime.strptime(open_date, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError("Use a valid account opening date.")
     parent = name.rsplit(":", 1)[0] if ":" in name else ""
     with connect(path) as db:
         if original_name and original_name != name:
+            if db.execute("SELECT 1 FROM accounts WHERE name=?", (name,)).fetchone():
+                raise ValueError("An account with this name already exists.")
+            _require_unused_account(db, original_name)
             db.execute("UPDATE accounts SET name=?, parent=?, currency=?, description=?, open_date=? WHERE name=?", (name, parent, currency or None, description, open_date, original_name))
             db.execute("UPDATE accounts SET parent=? WHERE parent=?", (name, original_name))
         else:
@@ -291,6 +323,7 @@ def save_account(path: Path, name: str, currency: str, description: str, open_da
 
 def delete_account(path: Path, name: str) -> None:
     with connect(path) as db:
+        _require_unused_account(db, name)
         if db.execute("SELECT 1 FROM accounts WHERE parent=?", (name,)).fetchone():
             raise ValueError("Delete child accounts first")
         db.execute("DELETE FROM accounts WHERE name=?", (name,))
@@ -303,11 +336,16 @@ def link_records(path: Path, record_ids: list[str]) -> int:
         missing = db.execute("SELECT COUNT(*) FROM records WHERE record_id IN (%s)" % ",".join("?" * len(record_ids)), record_ids).fetchone()[0]
         if missing != len(record_ids):
             raise ValueError("One or more records no longer exist")
+        group_ids = {row[0] for row in db.execute("SELECT group_id FROM event_members WHERE record_id IN (%s)" % ",".join("?" * len(record_ids)), record_ids)}
+        if len(group_ids) > 1:
+            raise ValueError("These records belong to different events. Unlink them before combining.")
         existing = db.execute("SELECT group_id FROM event_members WHERE record_id IN (%s) ORDER BY group_id LIMIT 1" % ",".join("?" * len(record_ids)), record_ids).fetchone()
         group_id = existing[0] if existing else db.execute("INSERT INTO event_groups(status,created_at) VALUES('linked',?) RETURNING group_id", (datetime.now().isoformat(timespec="seconds"),)).fetchone()[0]
         for record_id in record_ids:
             db.execute("INSERT OR IGNORE INTO event_members VALUES (?,?)", (group_id, record_id))
             db.execute("UPDATE records SET status='linked', synced_at=NULL WHERE record_id=?", (record_id,))
+        db.execute("UPDATE event_groups SET status='linked', synced_at=NULL WHERE group_id=?", (group_id,))
+        db.execute("UPDATE records SET status='linked', accounting_json=NULL, synced_at=NULL WHERE record_id IN (SELECT record_id FROM event_members WHERE group_id=?)", (group_id,))
         for index, left in enumerate(record_ids):
             for right in record_ids[index + 1:]:
                 db.execute("INSERT OR IGNORE INTO record_links VALUES (?,?)", (left, right))
@@ -417,3 +455,19 @@ def editor_duplicate(path: Path, table: str, keys: list[dict[str, str]]) -> int:
             db.execute(f"INSERT INTO [{table}] (" + ",".join(f"[{column}]" for column in insert_columns) + ") VALUES (" + ",".join("?" for _ in insert_columns) + ")", [values[column] for column in insert_columns])
             duplicated += 1
     return duplicated
+
+
+def validate_postings(path, postings, transaction_date=None):
+    from .validation import validate
+    validate(postings, {r['name']: r for r in get_accounts(path)}, transaction_date)
+
+
+def _require_unused_account(db, name):
+    for row in db.execute("SELECT accounting_json FROM records WHERE accounting_json IS NOT NULL"):
+        if any(p.get("account") == name for p in json.loads(row[0] or "[]")):
+            raise ValueError("This account is used by transactions. Update their postings first.")
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='rules'").fetchone():
+        for row in db.execute("SELECT definition FROM rules"):
+            definition = json.loads(row[0])
+            if name in (definition.get("source_account"), definition.get("target_account")):
+                raise ValueError("This account is used by a rule. Update the rule first.")

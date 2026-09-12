@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ page_title|default('Finance workspace') }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">≋</span> Clearledger <small>YOUR FINANCE WORKSPACE</small></a>
+  <div class="actions"><span class="local-badge">● Local & private</span><a class="button" href="{{ url_for('index', tab='manual') }}">+ Add transaction</a><a class="button primary" href="{{ url_for('index', tab='sync') }}">Import / export</a></div>
+</header>
+<div class="shell">
+  <nav class="tabs" aria-label="Main navigation">
+    <p class="nav-label">WORKSPACE</p>
+    {% for key, icon, label in [('stats','◫','Overview'),('review','◉','Review inbox'),('search','≡','Transactions'),('rules','⌘','Rules & learning'),('accounts','▤','Accounts'),('sync','⇄','Import & export')] %}
+    <a class="tab {% if tab == key %}active{% endif %}" {% if tab == key %}aria-current="page"{% endif %} href="{{ url_for('index', tab=key) }}"><span>{{ icon }}</span>{{ label }}{% if key == 'review' %}<b>{{ counts.get('pending',0) + counts.get('linked',0) }}</b>{% endif %}</a>
+    {% endfor %}
+    <p class="nav-label">TOOLS</p>
+    {% for key, label in [('manual','Add transaction'),('files','Beancount files'),('database','Database editor')] %}
+    <a class="tab {% if tab == key %}active{% endif %}" href="{{ url_for('index', tab=key) }}">{{ label }}</a>
+    {% endfor %}
+    <div class="nav-note">Your records, your files.<br><small>Review → resolve → export</small></div>
+  </nav>
+  <main id="main">
+    {% for category, message in get_flashed_messages(with_categories=true) %}<div class="flash {{ category }}" role="{{ 'alert' if category == 'error' else 'status' }}">{{ message }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>
+

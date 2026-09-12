@@ -1,33 +1,6 @@
-<!doctype html>
-<html lang="en">
-
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Edit database</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-</head>
-
-<body>
-    <header class="topbar"><a class="brand" href="{{ url_for('index') }}">Import Manager</a>
-        <div class="actions">
-            <form method="post" action="{{ url_for('execute') }}"><button class="primary">Execute to Beancount</button>
-            </form>
-            <form method="post" action="{{ url_for('sync') }}"><button>Sync/import with Beancount</button></form>
-        </div>
-    </header>
-    <div class="shell">
-        <nav class="tabs">
-            {% for key, label in [('search','Search'),('review','Flip through and resolve
-            pending'),('sync','Export/Import from Beancount'),('manual','Manually enter
-            posts/transaction'),('accounts','Accounts'),('database','Edit database'),('files','Edit beancount
-            files'),('stats','Stats')] %}<a class="tab {% if tab == key %}active{% endif %}"
-                href="{{ url_for('index', tab=key) }}">{{ label }}</a>{% endfor %}
-        </nav>
-        <main>
-            {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div
-                class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
-            <section class="panel database-panel">
+{% extends 'base.html' %}
+{% block content %}
+<section class="panel database-panel">
                 <p class="eyebrow">SQLITE STATE</p>
                 <h1>Edit database</h1>
                 <p class="muted">Edit, add, duplicate, or delete importer state directly. Select multiple rows for bulk
@@ -73,8 +46,4 @@
                         endfor %}</div><button class="primary">Add row</button>
                 </form>
             </section>
-        </main>
-    </div>
-</body>
-
-</html>
+{% endblock %}

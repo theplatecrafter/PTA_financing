@@ -1,0 +1,16 @@
+{% if not selected_group_id %}
+<div class="quick-entry" data-amount="{{ selected['amount'] or '' }}" data-currency="{{ selected['currency'] or '' }}">
+<details {% if not selected['accounting_json'] %}open{% endif %}><summary>Quick categorize · two accounts</summary>
+<p class="muted">Choose where the money moved. Use the posting editor below for splits, fees, and more complex transactions.</p>
+<div class="form-grid"><label>Bank / payment account<select data-quick="source"><option value="">Choose account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label><label>Category / other account<select data-quick="target"><option value="">Choose account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label></div>
+<label>Money movement<select data-quick="direction"><option value="-1">Money out / card purchase</option><option value="1">Money in / refund / card repayment</option></select></label><button type="button" onclick="quickCategorize(this)">Fill balanced postings</button>
+</details></div>
+{% endif %}
+{% if suggestion %}
+<div class="suggestion"><p class="eyebrow">{{ 'MATCHING RULE' if suggestion.kind == 'rule' else 'LEARNED SUGGESTION' }}</p><p>{{ suggestion.reason }}</p>{% for posting in suggestion.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount }} {{ posting.currency }}</b></div>{% endfor %}<button type="button" data-postings="{{ suggestion.postings|tojson|forceescape }}" onclick="useSuggestion(this)">Use suggestion</button><small>Check the postings, then resolve to confirm.</small></div>
+{% endif %}
+
+
+{% if selected['status'] in ['resolved','synced'] and not selected_group_id and selected['accounting_json'] and json.loads(selected['accounting_json'])|length == 2 %}
+<p><a class="button" href="{{ url_for('index',tab='rules',from_record=selected['record_id']) }}#rule-editor">Create a rule from this transaction</a></p>
+{% endif %}
