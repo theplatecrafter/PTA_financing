@@ -16,7 +16,7 @@
 <div class="shell">
   <nav class="tabs" aria-label="Main navigation">
     <p class="nav-label">WORKSPACE</p>
-    {% for key, icon, label in [('stats','◫','Overview'),('review','◉','Review inbox'),('search','≡','Transactions'),('rules','⌘','Rules & learning'),('accounts','▤','Accounts'),('sync','⇄','Import & export')] %}
+    {% for key, icon, label in [('stats','◫','Overview'),('review','◉','Review inbox'),('search','≡','Transactions'),('rules','⌘','Rules & learning'),('predictions','✧','Predictions'),('reports','▥','Fava reports'),('accounts','▤','Accounts'),('sync','⇄','Import & export')] %}
     <a class="tab {% if tab == key %}active{% endif %}" {% if tab == key %}aria-current="page"{% endif %} href="{{ url_for('index', tab=key) }}"><span>{{ icon }}</span>{{ label }}{% if key == 'review' %}<b>{{ counts.get('pending',0) + counts.get('linked',0) }}</b>{% endif %}</a>
     {% endfor %}
     <p class="nav-label">TOOLS</p>

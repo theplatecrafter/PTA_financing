@@ -1,4 +1,21 @@
-let lastSearchCheckbox = null; function addPosting(target, button) { const container = document.getElementById(target) || (button && button.closest('form') && button.closest('form').querySelector('[id$="postings"]')); if (!container) return; const source = container.querySelector('.posting'); if (!source) return; const row = source.cloneNode(true); row.querySelectorAll('input').forEach(i => i.value = ''); row.querySelectorAll('select').forEach(s => s.selectedIndex = 0); container.append(row); showBalance(container.closest('form')) } function addBulkPosting(button) { addPosting('bulk-postings', button) } function removePosting(button) { const container = button.closest('[id$="postings"]'); const rows = container ? container.querySelectorAll('.posting') : []; if (rows.length > 1) { button.closest('.posting').remove(); showBalance(container.closest('form')); } } function collectHeld() { const form = document.getElementById('held-link-form'); form.querySelectorAll('input[name="linked_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="held_record"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'linked_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="linked_record_id"]') !== null } function handleSearchCheckbox(event, checkbox) { event.stopPropagation(); const boxes = [...document.querySelectorAll('input[name="selected_record_id"]')]; if (event.shiftKey && lastSearchCheckbox) { const start = boxes.indexOf(lastSearchCheckbox); const end = boxes.indexOf(checkbox); if (start !== -1 && end !== -1) boxes.slice(Math.min(start, end), Math.max(start, end) + 1).forEach(box => box.checked = checkbox.checked) } lastSearchCheckbox = checkbox; updateSelection() } function updateSelection() { const boxes = document.querySelectorAll('input[name="selected_record_id"]:checked'); const count = document.getElementById('search-selection-count'); if (count) count.textContent = boxes.length + ' selected'; const bulk = document.getElementById('bulk-interpretation-panel'); const single = document.getElementById('single-interpretation-panel'); if (bulk && single) { const hasSelection = boxes.length > 0; bulk.hidden = !hasSelection; single.hidden = hasSelection } } function toggleAllSearch() { const boxes = document.querySelectorAll('input[name="selected_record_id"]'); const shouldSelect = [...boxes].some(box => !box.checked); boxes.forEach(box => box.checked = shouldSelect); lastSearchCheckbox = null; updateSelection() } function collectSearchSelection(form) { form.querySelectorAll('input[name="selected_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="selected_record_id"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'selected_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="selected_record_id"]') !== null }
+let lastSearchCheckbox = null; function addPosting(target, button) {
+  const container = document.getElementById(target) || button?.closest('form')?.querySelector('[id$="postings"]');
+  if (!container) return;
+  const source = container.querySelector('.posting');
+  if (!source) return;
+  const row = source.cloneNode(true);
+  delete row.dataset.remainder;
+  row.querySelectorAll('input').forEach(input => input.value = '');
+  row.querySelectorAll('select').forEach(select => select.selectedIndex = 0);
+  if (!container.querySelector('[name="posting_sign"]') && container.children.length === 2) {
+    row.dataset.remainder = 'true';
+    row.querySelector('[name="posting_amount"]').title = 'Fee remainder from the first two postings; edit to override';
+  }
+  container.append(row);
+  updateFeeRemainder(container);
+  showBalance(container.closest('form'));
+}
+ function addBulkPosting(button) { addPosting('bulk-postings', button) } function removePosting(button) { const container = button.closest('[id$="postings"]'); const rows = container ? container.querySelectorAll('.posting') : []; if (rows.length > 1) { button.closest('.posting').remove(); showBalance(container.closest('form')); } } function collectHeld() { const form = document.getElementById('held-link-form'); form.querySelectorAll('input[name="linked_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="held_record"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'linked_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="linked_record_id"]') !== null } function handleSearchCheckbox(event, checkbox) { event.stopPropagation(); const boxes = [...document.querySelectorAll('input[name="selected_record_id"]')]; if (event.shiftKey && lastSearchCheckbox) { const start = boxes.indexOf(lastSearchCheckbox); const end = boxes.indexOf(checkbox); if (start !== -1 && end !== -1) boxes.slice(Math.min(start, end), Math.max(start, end) + 1).forEach(box => box.checked = checkbox.checked) } lastSearchCheckbox = checkbox; updateSelection() } function updateSelection() { const boxes = document.querySelectorAll('input[name="selected_record_id"]:checked'); const count = document.getElementById('search-selection-count'); if (count) count.textContent = boxes.length + ' selected'; const bulk = document.getElementById('bulk-interpretation-panel'); const single = document.getElementById('single-interpretation-panel'); if (bulk && single) { const hasSelection = boxes.length > 0; bulk.hidden = !hasSelection; single.hidden = hasSelection } } function toggleAllSearch() { const boxes = document.querySelectorAll('input[name="selected_record_id"]'); const shouldSelect = [...boxes].some(box => !box.checked); boxes.forEach(box => box.checked = shouldSelect); lastSearchCheckbox = null; updateSelection() } function collectSearchSelection(form) { form.querySelectorAll('input[name="selected_record_id"]').forEach(input => input.remove()); document.querySelectorAll('input[name="selected_record_id"]:checked').forEach(checked => { const input = document.createElement('input'); input.type = 'hidden'; input.name = 'selected_record_id'; input.value = checked.value; form.append(input) }); return form.querySelector('input[name="selected_record_id"]') !== null }
 
 function postingContainer(button) {
   return button.closest('.review-current, #single-interpretation-panel').querySelector('[id$="postings"]');
@@ -12,6 +29,7 @@ function fillPostings(button, postings) {
   container.replaceChildren();
   postings.forEach(posting => {
     const row = prototype.cloneNode(true);
+    delete row.dataset.remainder;
     row.querySelector('[name="posting_account"]').value = posting.account;
     row.querySelector('[name="posting_amount"]').value = posting.amount;
     row.querySelector('[name="posting_currency"]').value = posting.currency;
@@ -23,20 +41,73 @@ function fillPostings(button, postings) {
 function useSuggestion(button) {
   fillPostings(button, JSON.parse(button.dataset.postings));
 }
-function quickCategorize(button) {
+async function quickCategorize(button) {
   const area = button.closest('.quick-entry');
-  const source = area.querySelector('[data-quick="source"]').value;
-  const target = area.querySelector('[data-quick="target"]').value;
-  const direction = area.querySelector('[data-quick="direction"]').value;
-  const amount = area.dataset.amount.trim().replace(/^[+-]/, '');
-  if (!source || !target || source === target || !/^\d+(\.\d+)?$/.test(amount) || !area.dataset.currency) {
-    alert('Choose two different accounts. A valid source amount and currency are required.');
+  const error = area.querySelector('.quick-error');
+  error.hidden = true;
+  const data = new FormData();
+  area.querySelectorAll('[data-quick]').forEach(input => data.set(input.dataset.quick, input.value));
+  if (!data.get('target_amount').trim()) {
+    const value = data.get('source_amount').trim();
+    data.set('target_amount', value.startsWith('-') ? value.slice(1) : '-' + value.replace(/^\+/, ''));
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch(area.dataset.previewUrl, {method: 'POST', body: data});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not build postings.');
+    fillPostings(button, result.postings);
+  } catch (problem) {
+    error.textContent = problem.message || 'Could not reach the app. Try again.';
+    error.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function updateCondition(select) {
+  const input = select.closest('.rule-condition').querySelector('[name="condition_pattern"]');
+  const needsValue = !['empty', 'exists'].includes(select.value);
+  input.required = needsValue;
+  input.readOnly = !needsValue;
+  input.placeholder = needsValue ? 'Matching value' : 'No value needed';
+}
+function addRuleCondition() {
+  const container = document.getElementById('rule-conditions');
+  const row = container.querySelector('.rule-condition').cloneNode(true);
+  row.querySelector('[name="condition_pattern"]').value = '';
+  container.append(row);
+  updateCondition(row.querySelector('[name="condition_operator"]'));
+  row.querySelector('select').focus();
+}
+function removeRuleCondition(button) {
+  const row = button.closest('.rule-condition');
+  if (row.parentElement.children.length > 1) row.remove();
+}
+
+// Compute the third posting from the first two using exact decimal integers.
+function updateFeeRemainder(container) {
+  const rows = [...container.querySelectorAll('.posting')];
+  if (rows.length !== 3 || !rows[2].dataset.remainder) return;
+  const first = rows.slice(0, 2).map(row => ({
+    amount: row.querySelector('[name="posting_amount"]').value.trim(),
+    currency: row.querySelector('[name="posting_currency"]').value.trim()
+  }));
+  if (!first[0].currency || first[0].currency !== first[1].currency ||
+      first.some(p => !/^[+-]?\d+(\.\d+)?$/.test(p.amount))) {
+    rows[2].querySelector('[name="posting_amount"]').value = '';
     return;
   }
-  fillPostings(button, [
-    {account: source, amount: direction === '-1' ? '-' + amount : amount, currency: area.dataset.currency},
-    {account: target, amount: direction === '-1' ? amount : '-' + amount, currency: area.dataset.currency}
-  ]);
+  const scale = Math.max(...first.map(p => (p.amount.split('.')[1] || '').length));
+  const total = first.reduce((sum, p) => {
+    const [whole, fraction = ''] = p.amount.replace(/^[+-]/, '').split('.');
+    return sum + BigInt(whole + fraction.padEnd(scale, '0')) * (p.amount.startsWith('-') ? -1n : 1n);
+  }, 0n);
+  const remainder = -total;
+  let digits = (remainder < 0n ? -remainder : remainder).toString().padStart(scale + 1, '0');
+  if (scale) digits = digits.slice(0, -scale) + '.' + digits.slice(-scale);
+  rows[2].querySelector('[name="posting_amount"]').value = (remainder < 0n ? '-' : '') + digits;
+  rows[2].querySelector('[name="posting_currency"]').value = first[0].currency;
 }
 // Exact decimal arithmetic avoids floating point rounding in the balance hint.
 function showBalance(form) {
@@ -68,9 +139,15 @@ function showBalance(form) {
   output.style.color = balanced ? 'var(--accent)' : 'var(--muted)';
 }
 document.addEventListener('input', event => {
+  const posting = event.target.closest('.posting');
+  if (posting) {
+    if (event.target.name === 'posting_amount') delete posting.dataset.remainder;
+    updateFeeRemainder(posting.parentElement);
+  }
   const form = event.target.form || event.target.closest('form');
   if (form) showBalance(form);
 });
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('form').forEach(showBalance);
+  document.querySelectorAll('[name="condition_operator"]').forEach(updateCondition);
 });

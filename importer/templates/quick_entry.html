@@ -1,13 +1,27 @@
-{% if not selected_group_id %}
-<div class="quick-entry" data-amount="{{ selected['amount'] or '' }}" data-currency="{{ selected['currency'] or '' }}">
-<details {% if not selected['accounting_json'] %}open{% endif %}><summary>Quick categorize · two accounts</summary>
-<p class="muted">Choose where the money moved. Use the posting editor below for splits, fees, and more complex transactions.</p>
-<div class="form-grid"><label>Bank / payment account<select data-quick="source"><option value="">Choose account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label><label>Category / other account<select data-quick="target"><option value="">Choose account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label></div>
-<label>Money movement<select data-quick="direction"><option value="-1">Money out / card purchase</option><option value="1">Money in / refund / card repayment</option></select></label><button type="button" onclick="quickCategorize(this)">Fill balanced postings</button>
+{% set first = linked_members[0] if linked_members else selected %}
+{% set second = linked_members[1] if linked_members|length > 1 else none %}
+<div class="quick-entry" data-preview-url="{{ url_for('categorize_preview',record_id=selected['record_id']) }}">
+<details {% if not selected['accounting_json'] %}open{% endif %}>
+<summary>Quick categorize · two accounts + optional fee</summary>
+<p class="muted">Enter signed postings: negative means money leaves an account, positive means it arrives. Check the signs; some banks report purchases as positive amounts. A fee account receives the remaining difference.</p>
+<div class="form-grid">
+{% for key,label,row in [('source','First account',first),('target','Second account',second)] %}
+<div>
+<label>{{ label }}<select data-quick="{{ key }}"><option value="">Choose account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label>
+{% if row %}<small>{{ row['source'] }} · {{ row['description'] }} · reported {{ row['amount'] or '—' }} {{ row['currency'] or '' }}</small>{% endif %}
+<label>{{ label }} amount<input data-quick="{{ key }}_amount" inputmode="decimal" value="{{ row['amount'] or '' if row else '' }}" placeholder="{{ 'Opposite of first amount if blank' if not row else 'Signed amount' }}"></label>
+<label>{{ label }} currency<input data-quick="{{ key }}_currency" value="{{ row['currency'] or '' if row else first['currency'] or '' }}"></label>
+</div>
+{% endfor %}
+</div>
+<label>Fee / adjustment account (optional)<select data-quick="fee"><option value="">No fee account</option>{% for account in accounts %}<option>{{ account.name }}</option>{% endfor %}</select></label>
+<p class="muted">For example: −103 from your bank, +100 to the destination, and +3 to Expenses:Fees. The remainder is a suggested fee, so check it before resolving. Different currencies cannot be combined into one fee.</p>
+<button type="button" onclick="quickCategorize(this)">Fill balanced postings</button>
+<p class="quick-error" role="alert" hidden></p>
 </details></div>
-{% endif %}
 {% if suggestion %}
-<div class="suggestion"><p class="eyebrow">{{ 'MATCHING RULE' if suggestion.kind == 'rule' else 'LEARNED SUGGESTION' }}</p><p>{{ suggestion.reason }}</p>{% for posting in suggestion.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount }} {{ posting.currency }}</b></div>{% endfor %}<button type="button" data-postings="{{ suggestion.postings|tojson|forceescape }}" onclick="useSuggestion(this)">Use suggestion</button><small>Check the postings, then resolve to confirm.</small></div>
+<div class="suggestion"><p class="eyebrow">{{ 'MATCHING RULE' if suggestion.kind == 'rule' else 'LEARNED SUGGESTION' }}</p><p>{{ suggestion.reason }}</p>{% if suggestion.matched_fields %}<p class="muted">Matching evidence: {{ suggestion.matched_fields|join(', ') }}</p>{% endif %}
+{% if suggestion.accounts_only %}<p><strong>Accounts only:</strong> enter amounts for all postings, including fees and conversions.</p>{% endif %}{% for posting in suggestion.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount or "Enter amount" }} {{ posting.currency }}</b></div>{% endfor %}<button type="button" data-postings="{{ suggestion.postings|tojson|forceescape }}" onclick="useSuggestion(this)">Use suggestion</button><small>Check the postings, then resolve to confirm.</small></div>
 {% endif %}
 
 

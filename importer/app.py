@@ -9,9 +9,9 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from flask import abort, Flask, flash, redirect, render_template, request, url_for
+from flask import abort, Flask, flash, redirect, render_template, request, url_for, jsonify
 
-from . import database, ledger, automation
+from . import database, ledger, automation, categorization, learning as learning_model
 
 ROOT = Path(__file__).resolve().parent.parent
 PARSERS = {
@@ -50,7 +50,7 @@ MANUAL_FIELDS = (
 )
 
 
-def create_app(db_path: Path | None = None) -> Flask:
+def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.secret_key = "local-importer"
     app.config["DB_PATH"] = Path(db_path or os.environ.get("IMPORTER_DB_PATH", ROOT / "state" / "importer.db"))
@@ -58,19 +58,32 @@ def create_app(db_path: Path | None = None) -> Flask:
     app.config["POSTS_PATH"] = ROOT / "posts.beancount"
     database.initialize_database(app.config["DB_PATH"])
     automation.initialize(app.config["DB_PATH"])
+    app.config["LEDGER_PATH"] = Path(ledger_path or ROOT / "main.beancount")
+    try:
+        from fava.application import create_app as create_fava
+        from werkzeug.middleware.dispatcher import DispatcherMiddleware
+        reports = create_fava([app.config["LEDGER_PATH"]])
+        app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {"/fava": reports})
+        app.config["FAVA_AVAILABLE"] = True
+    except ImportError:
+        app.config["FAVA_AVAILABLE"] = False
 
     @app.context_processor
     def shared_context():
         accounts = database.get_accounts(app.config["DB_PATH"])
         with database.connect(app.config["DB_PATH"]) as db:
             counts = {r[0]: r[1] for r in db.execute("SELECT status,COUNT(*) FROM records GROUP BY status")}
-        return {"counts": counts, "accounts": accounts, "account_options": _account_options(accounts), "json": json, "row_keys": lambda row, keys: {key: row[key] for key in keys}, "manual_fields": MANUAL_FIELDS, "today": date.today().isoformat()}
+        return {"rule_conditions": automation.conditions, "counts": counts, "accounts": accounts, "account_options": _account_options(accounts), "json": json, "row_keys": lambda row, keys: {key: row[key] for key in keys}, "manual_fields": MANUAL_FIELDS, "today": date.today().isoformat()}
 
     @app.get("/")
     def index():
         tab = request.args.get("tab", "stats")
-        if tab not in {"stats", "review", "search", "rules", "accounts", "sync", "manual", "files", "database"}:
+        if tab not in {"stats", "review", "search", "rules", "accounts", "sync", "manual", "files", "database", "reports", "predictions"}:
             abort(404)
+        if tab == "reports":
+            return render_template("reports.html", tab=tab, available=app.config["FAVA_AVAILABLE"])
+        if tab == "predictions":
+            return render_template("predictions.html", tab=tab, scan=None, training=learning_model.training_summary(app.config["DB_PATH"]))
         if tab == "rules":
             configured = automation.rules(app.config["DB_PATH"])
             editing = next((r for r in configured if r['id'] == request.args.get('edit', type=int)), None)
@@ -89,7 +102,7 @@ def create_app(db_path: Path | None = None) -> Flask:
                 setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
             return render_template("rules.html", tab=tab, rules=configured, editing=editing,
                 preview=automation.preview(app.config["DB_PATH"]), history=history, learned=learned,
-                learning_enabled=not setting or setting[0] != 'false', parsers=PARSERS)
+                learning_enabled=not setting or setting[0] != 'false', parsers=PARSERS, match_fields=automation.available_fields(app.config["DB_PATH"]), operators=automation.OPERATORS)
         if tab == "files":
             return render_template(
                 "files.html",
@@ -130,6 +143,22 @@ def create_app(db_path: Path | None = None) -> Flask:
                 rows, columns, primary_keys = database.editor_table(app.config["DB_PATH"], table)
             return render_template("database.html", tab=tab, table=table, tables=database.EDITOR_TABLES, rows=rows, columns=columns, primary_keys=primary_keys)
         return render_template("index.html", suggestion=automation.suggestion(app.config["DB_PATH"], selected), tab=tab, status=status, query=query, records=records, selected=selected, held=held, linked_members=linked_members, selected_group_id=selected_group_id, record_groups=record_groups, review_position=review_position, next_record_id=next_record_id, selected_group_id_query=request.args.get("group", ""), groups=database.get_groups(app.config["DB_PATH"]))
+
+    @app.post("/predictions/run")
+    def run_predictions():
+        return render_template("predictions.html", tab="predictions", scan=automation.scan_pending(app.config["DB_PATH"]), training=learning_model.training_summary(app.config["DB_PATH"]))
+
+    @app.post("/records/<record_id>/categorize-preview")
+    def categorize_preview(record_id):
+        row = database.get_record(app.config["DB_PATH"], record_id)
+        if not row:
+            abort(404)
+        members = database.get_group_members(app.config["DB_PATH"], database.get_group_id(app.config["DB_PATH"], record_id)) or [row]
+        try:
+            postings = categorization.quick_postings(app.config["DB_PATH"], request.form, min(r["transaction_date"] for r in members))
+            return jsonify(postings=postings)
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
 
     @app.post("/records/<record_id>/save")
     def save_record(record_id: str):
@@ -175,6 +204,10 @@ def create_app(db_path: Path | None = None) -> Flask:
         postings = _bulk_postings_from_form()
         try:
             database.append_accounting(app.config["DB_PATH"], record_ids, postings, status)
+            if status == "resolved":
+                for record_id in set(record_ids):
+                    row = database.get_record(app.config["DB_PATH"], record_id)
+                    automation.learn(app.config["DB_PATH"], row, json.loads(row["accounting_json"] or "[]"))
             flash(f"Saved accounting postings for {len(record_ids)} record(s).", "success")
         except ValueError as error:
             flash(str(error), "error")
@@ -383,6 +416,12 @@ def create_app(db_path: Path | None = None) -> Flask:
             flash(str(error), "error")
         return redirect(url_for("index", tab="rules"))
 
+    @app.post("/learning/rebuild")
+    def rebuild_learning():
+        count = automation.rebuild_learning(app.config["DB_PATH"])
+        flash(f"Refreshed parsed-data features for {count} confirmed training example(s). Rules and automatic decisions were not used as labels.", "success")
+        return redirect(url_for("index", tab="predictions"))
+
     @app.post("/learning")
     def learning():
         with database.connect(app.config["DB_PATH"]) as db:
@@ -426,4 +465,4 @@ def _bulk_postings_from_form() -> list[dict[str, str]]:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "50001")), debug=False)

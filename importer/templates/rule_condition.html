@@ -1,0 +1,9 @@
+<fieldset class="rule-condition">
+<legend>Filter</legend>
+<div class="form-grid">
+<label>Match field<select name="condition_field">{% for value,label in match_fields %}<option value="{{ value }}" {% if condition.field == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Match type<select name="condition_operator" onchange="updateCondition(this)">{% for value,label in operators.items() %}<option value="{{ value }}" {% if condition.operator == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+</div>
+<label>Matching value<input name="condition_pattern" value="{{ condition.pattern }}" {% if condition.operator not in ['empty','exists'] %}required{% endif %}><small>Text is case insensitive and literal. Numeric comparisons use decimal values.</small></label>
+<button type="button" onclick="removeRuleCondition(this)">Remove filter</button>
+</fieldset>

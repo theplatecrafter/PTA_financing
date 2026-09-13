@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">ON DEMAND, ON THIS DEVICE</p><h1>Predictions</h1>
+<p class="muted">Scan pending transactions using current rules and your confirmed decisions.</p></div>
+<form method="post" action="{{ url_for('run_predictions') }}"><button class="primary">Run predictions now</button></form></div>
+<div class="notice">This scan proposes accounts and amounts. It does not change drafts, resolve transactions, or export your ledger. Open a result, use its suggestion, then confirm in the review inbox.</div>
+{% if scan %}
+<div class="summary-strip"><span>{{ scan.total }} pending records scanned</span><span>{{ scan.results|length }} suggestions</span><span>{{ scan.skipped }} without a suggestion</span></div>
+{% for item in scan.results %}
+<article class="panel spaced"><span class="pill">{{ 'Rule match' if item.kind == 'rule' else 'Learned suggestion' }}</span>
+<h2>{{ item.record.description }}</h2><p class="muted">{{ item.record.transaction_date }} · {{ item.record.amount }} {{ item.record.currency }} · {{ item.record.source }}</p>
+<p>{{ item.reason }}</p>{% if item.matched_fields %}<p class="muted">Matching evidence: {{ item.matched_fields|join(', ') }}</p>{% endif %}
+{% if item.accounts_only %}<div class="notice">Account suggestions only. Enter and check all amounts, fees and conversion postings before resolving.</div>{% endif %}
+{% for posting in item.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount or "Enter amount" }} {{ posting.currency }}</b></div>{% endfor %}
+<a class="button spaced" href="{{ url_for('index',tab='review',record=item.record.record_id) }}">Review suggestion →</a></article>
+{% else %}<section class="panel"><h2>No suggestions yet</h2><p>Try a rule, or confirm more similar transactions. Existing drafts, linked events, and low-support matches are left for manual review.</p></section>{% endfor %}
+{% endif %}
+<section class="panel spaced"><h2>Training on this device</h2>
+<p>Model v2 uses all useful parsed fields separately, with source-specific weighting. Existing human-confirmed examples are enriched automatically. Rebuild to refresh features after editing parsed data; this never treats automatic decisions or rule definitions as training labels.</p>
+<form method="post" action="{{ url_for('rebuild_learning') }}"><button>Rebuild learned features</button></form>
+<div class="table-scroll spaced"><table class="clean-table"><thead><tr><th>Source</th><th>Usable examples</th><th>Highest-weight fields</th></tr></thead><tbody>
+{% for item in training %}<tr><td>{{ item.source }}</td><td>{{ item.count }}</td><td>{{ item.fields|join(', ') }}</td></tr>{% else %}<tr><td colspan="3">No usable confirmed examples yet. Confirm transactions to teach the model.</td></tr>{% endfor %}
+</tbody></table></div></section>
+<section class="panel spaced"><h2>How predictions work</h2>
+<p>Suggestions run when you open an eligible pending transaction or press Run predictions now. Rules run first. Otherwise, the model compares both description and counterparty, payment method/type, category, notes, tags, amounts, installment details, fees, exchange rates, currencies, and original CSV columns.</p>
+<p>Sources are kept separate. Field weights start with stronger emphasis on descriptive fields. As different account choices accumulate for a source, fields that distinguish those choices receive more weight. Missing fields do not count as matches. Repeated copies in original CSV columns are suppressed and their total influence is capped.</p>
+<p>Dates contribute weekday, month and day-of-month patterns; time contributes time of day. Numbers use relative closeness. Text uses normalized words and Japanese character pairs. Transaction IDs, source file paths and row numbers are excluded. Timing, balances, and amounts alone cannot establish an account suggestion.</p>
+<p>The nearest examples must score at least 65% similarity. Voting includes examples within eight percentage points of the strongest match, with at least three supporting the winning account layout and 80% weighted agreement. Agreement is not a probability of correctness.</p>
+<p>Only human-confirmed decisions train the model. Corrections replace the saved example; rules and automatic resolutions never train themselves. Parsed-data snapshots are stored alongside the confirmed account layout. Existing drafts and linked events are not predicted.</p>
+<p>Simple two-account matches can fill balanced amounts. Fees, splits, and conversions can receive account-layout suggestions, but their amounts remain blank for you to enter. Every resolved transaction still needs valid accounts, currencies and balanced postings.</p>
+<a href="{{ url_for('index',tab='rules') }}">Manage rules and learning preferences →</a></section>
+{% endblock %}

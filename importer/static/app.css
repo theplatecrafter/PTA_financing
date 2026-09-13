@@ -205,3 +205,9 @@ main { min-width: 0; width: 100%; max-width: 1800px; margin: 0 auto; padding: 36
 }
 
 button:disabled { opacity: .45; cursor: not-allowed; }
+
+.rule-condition { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.rule-condition legend { color: var(--accent); font-weight: 600; }
+.rule-condition > label { margin: 12px 0; }
+.fava-frame { display: block; width: 100%; height: calc(100vh - 250px); min-height: 650px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.quick-error { color: #a33c25; margin-top: 10px; }

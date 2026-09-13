@@ -125,7 +125,7 @@
                                         placeholder="Amount"><input name="posting_currency" aria-label="Posting currency"
                                         value="{{ posting.get('currency', selected['currency'] or '') }}"
                                         placeholder="Currency"><button type="button" class="remove-posting" onclick="removePosting(this)">Remove</button></div>{% endfor %}</div><button type="button"
-                                    onclick="addPosting('review-postings', this)">+ Add posting</button>
+                                    onclick="addPosting('review-postings', this)">+ Add posting</button><p class="muted">Adding a third posting fills the fee remainder from the first two. Choose its account; edit its amount to override.</p>
                             <div class="save-row"><button class="resolve" name="status"
                                     value="resolved">Resolve transaction</button><button name="status" value="pending">Save draft</button>
                                     {% if not selected_group_id %}<button name="status" value="held">Hold</button>{% endif %}<button name="status" value="ignored">Ignore</button>
@@ -201,7 +201,7 @@
                                     placeholder="Amount"><input name="posting_currency" aria-label="Posting currency"
                                     value="{{ posting.get('currency', selected['currency'] or '') }}"
                                     placeholder="Currency"><button type="button" class="remove-posting" onclick="removePosting(this)">Remove</button>
-                            </div>{% endfor %}</div><button type="button" onclick="addPosting('search-postings', this)">+ Add posting</button>
+                            </div>{% endfor %}</div><button type="button" onclick="addPosting('search-postings', this)">+ Add posting</button><p class="muted">Adding a third posting fills the fee remainder from the first two. Choose its account; edit its amount to override.</p>
                         <div class="save-row"><button class="resolve" name="status" value="resolved">Resolve transaction</button><button name="status" value="pending">Save and keep pending</button>{% if not (tab == 'search' and selected_group_id) %}<button name="status" value="held">Hold</button>{% endif %}<button name="status"
                                 value="ignored">Ignore</button></div>
                     </form>

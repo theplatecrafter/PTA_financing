@@ -3,7 +3,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
-from . import database
+from . import database, learning
 
 
 def initialize(path):
@@ -20,6 +20,9 @@ def initialize(path):
             record_id TEXT PRIMARY KEY, source TEXT NOT NULL, currency TEXT NOT NULL,
             direction TEXT NOT NULL, description TEXT NOT NULL, template TEXT NOT NULL);
         """)
+        if "features_json" not in {r[1] for r in db.execute("PRAGMA table_info(decisions)")}:
+            db.execute("ALTER TABLE decisions ADD COLUMN features_json TEXT")
+    rebuild_learning(path, only_missing=True)
 
 
 def rules(path):
@@ -28,17 +31,126 @@ def rules(path):
                 db.execute('SELECT * FROM rules ORDER BY priority, id')]
 
 
+
+OPERATORS = {
+    "contains": "Contains", "equals": "Equals", "starts": "Starts with",
+    "not_contains": "Does not contain", "not_equals": "Does not equal",
+    "gt": "Greater than (number)", "gte": "At least (number)",
+    "lt": "Less than (number)", "lte": "At most (number)",
+    "exists": "Has a value", "empty": "Is empty / missing",
+}
+
+
+def conditions(definition):
+    """Read old single-filter definitions without changing saved rules."""
+    return definition.get("conditions", [
+        {key: definition.get(key, "") for key in ("field", "operator", "pattern")}
+    ])
+
+
+def parsed_values(row):
+    values = json.loads(row["payload"])
+    # These display columns are the canonical editable source values.
+    values.update({key: row[key] for key in ("record_id", "source", "description", "amount", "currency")})
+    values["date"] = row["transaction_date"]
+    values["transaction_date"] = row["transaction_date"]
+    return values
+
+
+def pointer_parts(field):
+    return [part.replace("~1", "/").replace("~0", "~") for part in field[1:].split("/")]
+
+
+def field_value(row, field):
+    value = parsed_values(row)
+    for part in pointer_parts(field) if field.startswith("/") else [field]:
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def available_fields(path):
+    from dataclasses import fields
+    from .common import ParsedRecord
+    names = {f.name for f in fields(ParsedRecord)} | {"transaction_date"}
+    def nested(value, prefix=""):
+        if not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            pointer = prefix + "/" + key.replace("~", "~0").replace("/", "~1")
+            if prefix:
+                names.add(pointer)
+            else:
+                names.add(key)
+            nested(child, pointer)
+    with database.connect(path) as db:
+        for row in db.execute("SELECT payload FROM records"):
+            nested(json.loads(row[0]))
+    # Keep saved fields editable even after their source records are removed.
+    for rule in rules(path):
+        names.update(c["field"] for c in conditions(rule["definition"]))
+    return [(name, " → ".join(pointer_parts(name)) if name.startswith("/") else name)
+            for name in sorted(names) if name]
+
+
+def condition_matches(condition, row):
+    value = field_value(row, condition["field"])
+    empty = value is None or value == "" or value == [] or value == {}
+    op, pattern = condition["operator"], condition.get("pattern", "")
+    if op == "empty":
+        return empty
+    if op == "exists":
+        return not empty
+    if empty:
+        return False
+    if op in ("gt", "gte", "lt", "lte"):
+        try:
+            left, right = Decimal(str(value)), Decimal(pattern)
+            if not left.is_finite() or not right.is_finite():
+                return False
+        except InvalidOperation:
+            return False
+        return {"gt": left > right, "gte": left >= right, "lt": left < right, "lte": left <= right}[op]
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+    text, pattern = text.casefold(), pattern.casefold()
+    return {"contains": lambda: pattern in text, "equals": lambda: pattern == text,
+            "starts": lambda: text.startswith(pattern), "not_contains": lambda: pattern not in text,
+            "not_equals": lambda: pattern != text}[op]()
+
+
 def save_rule(path, form):
     definition = {key: form.get(key, '').strip() for key in (
         'source', 'currency', 'field', 'operator', 'pattern', 'direction',
         'minimum', 'maximum', 'source_account', 'target_account', 'source_sign')}
     name, mode = form.get('name', '').strip(), form.get('mode', 'suggest')
-    if not name or not definition['pattern']:
-        raise ValueError('Give the rule a name and matching text.')
-    if mode not in ('suggest', 'automatic') or definition['field'] not in ('description', 'counterparty', 'category'):
-        raise ValueError('Choose a valid rule mode and matching field.')
-    if definition['operator'] not in ('contains', 'equals', 'starts') or definition['direction'] not in ('any', 'positive', 'negative'):
-        raise ValueError('Choose a valid match and amount direction.')
+    if hasattr(form, "getlist") and "condition_field" in form:
+        fields, operators, patterns = [form.getlist("condition_" + key) for key in ("field", "operator", "pattern")]
+        if not (len(fields) == len(operators) == len(patterns)):
+            raise ValueError("Complete every filter.")
+        filters = [dict(field=f.strip(), operator=o, pattern=p.strip()) for f, o, p in zip(fields, operators, patterns)]
+    else:
+        filters = conditions(definition)
+    allowed = dict(available_fields(path))
+    if not name or not filters:
+        raise ValueError("Give the rule a name and at least one filter.")
+    for condition in filters:
+        if condition["field"] not in allowed or condition["operator"] not in OPERATORS:
+            raise ValueError("Choose a parsed field and a valid match type for every filter.")
+        if condition["operator"] not in ("exists", "empty") and not condition["pattern"]:
+            raise ValueError("Enter a matching value for every filter.")
+        if condition["operator"] in ("gt", "gte", "lt", "lte"):
+            try:
+                if not Decimal(condition["pattern"]).is_finite():
+                    raise InvalidOperation()
+            except InvalidOperation:
+                raise ValueError("Numeric comparisons need a finite number.")
+    definition["conditions"] = filters
+    definition["match_mode"] = form.get("match_mode", "all")
+    if mode not in ("suggest", "automatic") or definition["match_mode"] not in ("all", "any"):
+        raise ValueError("Choose a valid rule mode and filter combination.")
+    if definition["direction"] not in ("any", "positive", "negative"):
+        raise ValueError("Choose a valid amount direction.")
     if definition['source_sign'] not in ('positive', 'negative'):
         raise ValueError('Choose whether the source account increases or decreases.')
     accounts = {row['name'] for row in database.get_accounts(path)}
@@ -86,10 +198,8 @@ def matches(rule, row):
         return False
     if d['minimum'] and abs(amount) < Decimal(d['minimum']) or d['maximum'] and abs(amount) > Decimal(d['maximum']):
         return False
-    value = str(row['description'] or '') if d['field'] == 'description' else str(json.loads(row['payload']).get(d['field']) or '')
-    value, pattern = value.casefold(), d['pattern'].casefold()
-    return {'contains': lambda: pattern in value, 'equals': lambda: pattern == value,
-            'starts': lambda: value.startswith(pattern)}[d['operator']]()
+    matched = [condition_matches(condition, row) for condition in conditions(d)]
+    return bool(matched) and (any(matched) if d.get("match_mode", "all") == "any" else all(matched))
 
 
 def rule_postings(rule, row):
@@ -156,28 +266,56 @@ def undo(path, log_id):
 
 
 def learn(path, row, postings):
-    """Store the latest human decision once; never train on automatic output."""
+    """Save features from human-confirmed decisions, including complex layouts."""
+    database.validate_postings(path, postings, row["transaction_date"])
     with database.connect(path) as db:
-        db.execute('DELETE FROM decisions WHERE record_id=?', (row['record_id'],))
-        if not simple_record(row) or len(postings) != 2 or database.get_group_id(path, row['record_id']):
+        db.execute("DELETE FROM decisions WHERE record_id=?", (row["record_id"],))
+        if database.get_group_id(path, row["record_id"]):
             return
-        amount = abs(Decimal(row['amount']))
-        if any(p['currency'] != row['currency'] or abs(Decimal(p['amount'])) != amount for p in postings):
+        balanced = simple_record(row) and len(postings) == 2 and all(
+            p["currency"] == row["currency"] and abs(Decimal(p["amount"])) == abs(Decimal(row["amount"]))
+            for p in postings)
+        if len({p["account"] for p in postings}) < 2:
             return
-        template = sorted([(p['account'], 1 if Decimal(p['amount']) > 0 else -1) for p in postings])
-        if template[0][0] == template[1][0]:
-            return
-        payload = json.loads(row['payload'])
-        description = str(payload.get('counterparty') or row['description'] or '')
-        db.execute('INSERT INTO decisions VALUES(?,?,?,?,?,?)', (row['record_id'], row['source'], row['currency'],
-                   'positive' if Decimal(row['amount']) > 0 else 'negative', description, json.dumps(template)))
+        snapshot = learning.make_snapshot(row, postings, balanced)
+        template = (sorted([(p["account"], 1 if Decimal(p["amount"]) > 0 else -1) for p in postings])
+                    if balanced else {"mode": "accounts", "layout": snapshot["layout"]})
+        payload = json.loads(row["payload"])
+        description = str(payload.get("counterparty") or row["description"] or "")
+        db.execute("""INSERT OR REPLACE INTO decisions
+            (record_id,source,currency,direction,description,template,features_json)
+            VALUES(?,?,?,?,?,?,?)""", (row["record_id"], row["source"], row["currency"] or "",
+            learning.direction(row), description, json.dumps(template), json.dumps(snapshot, ensure_ascii=False)))
 
 
-def tokens(text):
-    return set(re.findall(r'[^\W\d_]+', text.casefold(), re.UNICODE))
+def rebuild_learning(path, only_missing=False):
+    """Enrich existing human labels, never infer labels from resolved status alone."""
+    with database.connect(path) as db:
+        rows = db.execute("""SELECT r.*, d.template AS learned_template, d.features_json
+            FROM decisions d JOIN records r USING(record_id)
+            WHERE r.status IN ('resolved','synced') AND NOT EXISTS
+            (SELECT 1 FROM event_members m WHERE m.record_id=r.record_id)""").fetchall()
+    count = 0
+    for row in rows:
+        if only_missing and row["features_json"]:
+            continue
+        postings = json.loads(row["accounting_json"] or "[]")
+        if row["features_json"]:
+            if json.loads(row["features_json"])["signature"] != learning.canonical(postings):
+                continue
+        else:
+            old_template = sorted([(p["account"], 1 if Decimal(p["amount"]) > 0 else -1) for p in postings])
+            if json.dumps(old_template) != row["learned_template"]:
+                continue
+        try:
+            learn(path, row, postings)
+            count += 1
+        except ValueError:
+            continue
+    return count
 
 
-def suggestion(path, row):
+def suggestion(path, row, examples=None, profiles=None):
     if not row or row['status'] != 'pending' or (row['accounting_json'] and json.loads(row['accounting_json'])) or database.get_group_id(path, row['record_id']):
         return None
     for rule in rules(path):
@@ -188,43 +326,23 @@ def suggestion(path, row):
             except ValueError:
                 return None
             return {'postings': postings, 'reason': 'Rule: ' + rule['name'], 'kind': 'rule'}
-    if not simple_record(row):
-        return None
     with database.connect(path) as db:
         setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
-        if setting and setting[0] == 'false':
+        if setting and setting[0] == "false":
             return None
-        examples = db.execute("""SELECT d.*, r.accounting_json AS current_accounting FROM decisions d JOIN records r USING(record_id)
-            WHERE r.status IN ('resolved','synced') AND d.source=? AND d.currency=? AND d.direction=?
-            AND d.record_id<>? AND NOT EXISTS(SELECT 1 FROM event_members m WHERE m.record_id=d.record_id)""",
-            (row['source'], row['currency'], 'positive' if Decimal(row['amount']) > 0 else 'negative', row['record_id'])).fetchall()
-    payload = json.loads(row['payload'])
-    query = tokens(str(payload.get('counterparty') or row['description'] or ''))
-    if not query:
-        return None
-    weights, support = defaultdict(float), Counter()
-    for example in examples:
-        current = json.loads(example['current_accounting'] or '[]')
-        template = sorted([(p['account'], 1 if Decimal(p['amount']) > 0 else -1) for p in current])
-        if json.dumps(template) != example['template']:
-            continue
-        other = tokens(example['description'])
-        similarity = len(query & other) / len(query | other)
-        if similarity >= .6:
-            weights[example['template']] += similarity
-            support[example['template']] += 1
-    if not weights:
-        return None
-    best = max(weights, key=weights.get)
-    agreement = weights[best] / sum(weights.values())
-    if support[best] < 3 or agreement < .8:
-        return None
-    postings = [{'account': account, 'amount': str(abs(Decimal(row['amount'])) * sign), 'currency': row['currency']}
-                for account, sign in json.loads(best)]
-    try:
-        database.validate_postings(path, postings, row['transaction_date'])
-    except ValueError:
-        return None
-    return {'kind': 'learned', 'postings': postings,
-            'reason': f"Learned from {support[best]} similar confirmed decisions · {agreement:.0%} weighted agreement (not a probability)"}
+    return learning.predict(path, row, examples if examples is not None else learning.load_examples(path), profiles)
 
+
+
+def scan_pending(path):
+    """Fresh, read-only predictions; existing drafts and linked events are untouched."""
+    pending = database.list_records(path, "pending")
+    results = []
+    examples = learning.load_examples(path)
+    profiles = {source: learning.fit_weights([e for e in examples if e["source"] == source])
+                for source in {e["source"] for e in examples}}
+    for row in pending:
+        prediction = suggestion(path, row, examples, profiles)
+        if prediction:
+            results.append({"record": row, **prediction})
+    return {"results": results, "total": len(pending), "skipped": len(pending) - len(results)}

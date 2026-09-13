@@ -1,0 +1,11 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">YOUR BEANCOUNT LEDGER</p><h1>Fava reports</h1>
+<p class="muted">Reports show your saved Beancount files. Export resolved transactions to include your latest decisions.</p></div>
+<a class="button" href="{{ '/fava/' if available else 'http://127.0.0.1:5000' }}" target="_blank" rel="noopener">Open Fava in a new tab ↗</a></div>
+{% if available %}
+<iframe class="fava-frame" title="Fava Beancount reports" src="/fava/"></iframe>
+{% else %}
+<div class="notice">Fava is not installed in this Python environment. Run <code>fava main.beancount</code> in your Debian terminal, then open Fava using the button above.</div>
+{% endif %}
+{% endblock %}
