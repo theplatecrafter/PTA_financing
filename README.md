@@ -156,3 +156,37 @@ generated entries. They do not change your financial records.
 Accounting references:
 - https://beancount.github.io/docs/
 - https://beancount.github.io/docs/getting_started_with_beancount/
+
+## Filters, account prefills, and prediction review
+
+Transactions and the rule editor share literal multi-field filters with AND/OR,
+original parsed columns, numeric comparisons, and positive/negative/either amount
+sign. “Any field” searches values across all parsed columns. Negative any-field
+filters require that no field matches. Blank search rows are ignored. Filtering
+happens before linked events are collapsed; an event appears if a member matches.
+Selections and saves retain the transaction filters.
+
+Use **Preview matching transactions** in the rule editor to test unsaved filters,
+including source, currency, amount limits and a preview status. The dialog shows
+matching records regardless of whether they qualify for automatic resolution.
+
+Choose **Prefill one account** for a rule that supplies a payment, destination,
+or fee account. Independent rules combine by role; lowest priority number wins
+each role. Prefills are computed whenever you review a record, so they cover
+existing and newly imported records without overwriting drafts. Full transaction
+rules still take precedence for complete suggestions. Account rules combine with
+learned predictions; only the user's eventual confirmation becomes a training
+example. Rules themselves and automatic resolutions are not training labels.
+
+**Run predictions now** opens one editable review card at a time, with suggested
+postings already filled. Resolve confirms and learns; Save draft keeps partial
+postings; Hold and Ignore remove the item from the pending prediction queue.
+Previous/Next browse the remaining suggestions. Validation errors keep your edits.
+Complex transactions may have accounts but blank amounts requiring review.
+
+Renaming an account also renames its descendants and references in saved postings,
+rules, automation history, learned account layouts, and Beancount files reached
+through includes from the configured main ledger (plus accounts/posts files).
+Source observations and rule matching text are preserved. Existing destination
+accounts are rejected rather than merged. SQLite changes and ledger file changes
+roll back on write errors; a rename never requires recategorizing old transactions.

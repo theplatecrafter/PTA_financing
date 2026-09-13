@@ -3,17 +3,32 @@
 <div class="page-heading"><div><p class="eyebrow">ON DEMAND, ON THIS DEVICE</p><h1>Predictions</h1>
 <p class="muted">Scan pending transactions using current rules and your confirmed decisions.</p></div>
 <form method="post" action="{{ url_for('run_predictions') }}"><button class="primary">Run predictions now</button></form></div>
-<div class="notice">This scan proposes accounts and amounts. It does not change drafts, resolve transactions, or export your ledger. Open a result, use its suggestion, then confirm in the review inbox.</div>
+<div class="notice">Review one prediction at a time. Suggestions stay unsaved until you choose an action. Resolve confirms a balanced transaction and teaches the model; Save draft keeps your work for later.</div>
 {% if scan %}
-<div class="summary-strip"><span>{{ scan.total }} pending records scanned</span><span>{{ scan.results|length }} suggestions</span><span>{{ scan.skipped }} without a suggestion</span></div>
-{% for item in scan.results %}
-<article class="panel spaced"><span class="pill">{{ 'Rule match' if item.kind == 'rule' else 'Learned suggestion' }}</span>
-<h2>{{ item.record.description }}</h2><p class="muted">{{ item.record.transaction_date }} · {{ item.record.amount }} {{ item.record.currency }} · {{ item.record.source }}</p>
+<div class="summary-strip"><span>{{ scan.total }} pending records scanned</span><span>{{ scan.results|length }} suggestions remaining</span><span>{{ scan.skipped }} without a suggestion</span></div>
+{% if item %}{% set selected=item.record %}
+<section class="panel prediction-review review-current">
+<p class="eyebrow">{{ 'Rule match' if item.kind == 'rule' else 'Learned suggestion' }} · {{ position+1 }} / {{ scan.results|length }}</p>
+<h2>{{ selected.description }}</h2><p>{{ selected.transaction_date }} · {{ selected.source }} · <b>{{ selected.amount }} {{ selected.currency }}</b></p>
 <p>{{ item.reason }}</p>{% if item.matched_fields %}<p class="muted">Matching evidence: {{ item.matched_fields|join(', ') }}</p>{% endif %}
-{% if item.accounts_only %}<div class="notice">Account suggestions only. Enter and check all amounts, fees and conversion postings before resolving.</div>{% endif %}
-{% for posting in item.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount or "Enter amount" }} {{ posting.currency }}</b></div>{% endfor %}
-<a class="button spaced" href="{{ url_for('index',tab='review',record=item.record.record_id) }}">Review suggestion →</a></article>
-{% else %}<section class="panel"><h2>No suggestions yet</h2><p>Try a rule, or confirm more similar transactions. Existing drafts, linked events, and low-support matches are left for manual review.</p></section>{% endfor %}
+{% if item.accounts_only %}<div class="notice">Accounts only: check and fill amounts, including any fees or currency conversions.</div>{% endif %}
+<details><summary>Parsed transaction details</summary><dl>{% for key,value in json.loads(selected.payload).items() if value is not none and value != '' %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>
+<form method="post" action="{{ url_for('save_record',record_id=selected.record_id) }}">
+<input type="hidden" name="return_tab" value="predictions">
+<input type="hidden" name="next_record" value="{{ scan.results[position+1].record.record_id if position+1 < scan.results|length else '' }}">
+<div id="prediction-postings">
+{% for posting in item.postings %}<div class="posting">
+<select name="posting_account" aria-label="Posting account"><option value="">Choose account</option>{% for value,label in account_options %}<option value="{{ value }}" {% if posting.account == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+<input name="posting_amount" aria-label="Posting amount" inputmode="decimal" value="{{ posting.amount }}" placeholder="Amount">
+<input name="posting_currency" aria-label="Posting currency" value="{{ posting.currency }}" placeholder="Currency">
+<button type="button" class="remove-posting" onclick="removePosting(this)">Remove</button></div>{% endfor %}
+</div>
+<button type="button" onclick="addPosting('prediction-postings',this)">+ Add posting</button>
+<div class="save-row"><button class="resolve" name="status" value="resolved">Resolve transaction</button><button name="status" value="pending">Save draft</button><button name="status" value="held">Hold</button><button name="status" value="ignored">Ignore</button></div>
+</form>
+<nav class="review-footer actions">{% if position > 0 %}<a class="button" href="{{ url_for('index',tab='predictions',run=1,record=scan.results[position-1].record.record_id) }}">Previous</a>{% endif %}<span>{{ position+1 }} / {{ scan.results|length }}</span>{% if position+1 < scan.results|length %}<a class="button" href="{{ url_for('index',tab='predictions',run=1,record=scan.results[position+1].record.record_id) }}">Next</a>{% endif %}</nav>
+</section>
+{% else %}<section class="panel"><h2>No suggestions to review</h2><p>Confirm more similar transactions or add account rules. Saved drafts are available in Transactions; held items remain in the review inbox.</p></section>{% endif %}
 {% endif %}
 <section class="panel spaced"><h2>Training on this device</h2>
 <p>Model v2 uses all useful parsed fields separately, with source-specific weighting. Existing human-confirmed examples are enriched automatically. Rebuild to refresh features after editing parsed data; this never treats automatic decisions or rule definitions as training labels.</p>
@@ -22,7 +37,7 @@
 {% for item in training %}<tr><td>{{ item.source }}</td><td>{{ item.count }}</td><td>{{ item.fields|join(', ') }}</td></tr>{% else %}<tr><td colspan="3">No usable confirmed examples yet. Confirm transactions to teach the model.</td></tr>{% endfor %}
 </tbody></table></div></section>
 <section class="panel spaced"><h2>How predictions work</h2>
-<p>Suggestions run when you open an eligible pending transaction or press Run predictions now. Rules run first. Otherwise, the model compares both description and counterparty, payment method/type, category, notes, tags, amounts, installment details, fees, exchange rates, currencies, and original CSV columns.</p>
+<p>Suggestions run when you open an eligible pending transaction or press Run predictions now. Full-transaction rules run first. Account rules prefill their designated fields and combine with model suggestions. Otherwise, the model compares both description and counterparty, payment method/type, category, notes, tags, amounts, installment details, fees, exchange rates, currencies, and original CSV columns.</p>
 <p>Sources are kept separate. Field weights start with stronger emphasis on descriptive fields. As different account choices accumulate for a source, fields that distinguish those choices receive more weight. Missing fields do not count as matches. Repeated copies in original CSV columns are suppressed and their total influence is capped.</p>
 <p>Dates contribute weekday, month and day-of-month patterns; time contributes time of day. Numbers use relative closeness. Text uses normalized words and Japanese character pairs. Transaction IDs, source file paths and row numbers are excluded. Timing, balances, and amounts alone cannot establish an account suggestion.</p>
 <p>The nearest examples must score at least 65% similarity. Voting includes examples within eight percentage points of the strongest match, with at least three supporting the winning account layout and 80% weighted agreement. Agreement is not a probability of correctness.</p>

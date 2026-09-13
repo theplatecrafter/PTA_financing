@@ -1,0 +1,8 @@
+<details class="transaction-filters" {% if filters.get('conditions') or filters.get('direction','any') != 'any' %}open{% endif %}>
+<summary>Filter by parsed fields or amount</summary>
+<label>Combine filters<select name="match_mode"><option value="all" {% if filters.get('match_mode') != 'any' %}selected{% endif %}>All filters (AND)</option><option value="any" {% if filters.get('match_mode') == 'any' %}selected{% endif %}>Any filter (OR)</option></select></label>
+<div id="rule-conditions">{% for condition in filters.get('conditions',[]) %}{% include 'rule_condition.html' %}{% else %}{% set condition={'field':'*','operator':'contains','pattern':''} %}{% include 'rule_condition.html' %}{% endfor %}</div>
+<button type="button" onclick="addRuleCondition()">+ Add filter</button>
+<label>Reported amount<select name="direction">{% for value,label in [('any','Either sign (including zero)'),('positive','Positive only'),('negative','Negative only')] %}<option value="{{ value }}" {% if filters.get('direction') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<div class="form-grid"><label>Minimum absolute amount<input name="minimum" inputmode="decimal" value="{{ filters.get('minimum','') }}"></label><label>Maximum absolute amount<input name="maximum" inputmode="decimal" value="{{ filters.get('maximum','') }}"></label></div>
+</details>

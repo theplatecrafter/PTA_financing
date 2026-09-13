@@ -8,10 +8,11 @@ import sqlite3
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlencode, parse_qsl
 
 from flask import abort, Flask, flash, redirect, render_template, request, url_for, jsonify
 
-from . import database, ledger, automation, categorization, learning as learning_model
+from . import database, ledger, automation, categorization, filtering, learning as learning_model
 
 ROOT = Path(__file__).resolve().parent.parent
 PARSERS = {
@@ -68,6 +69,25 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     except ImportError:
         app.config["FAVA_AVAILABLE"] = False
 
+    filter_keys = {"condition_field", "condition_operator", "condition_pattern", "match_mode", "direction", "minimum", "maximum", "source", "currency"}
+
+    def filter_suffix(form):
+        return urlencode([(k, v) for k, values in form.lists() if k in filter_keys for v in values])
+
+    def saved_filter_suffix():
+        return "&" + urlencode([(k,v) for k,v in parse_qsl(request.form.get("return_filters", ""), keep_blank_values=True) if k in filter_keys])
+
+    def prediction_page(run=False, record_id=None, submitted=None):
+        scan = automation.scan_pending(app.config["DB_PATH"]) if run else None
+        items = scan["results"] if scan else []
+        position = next((i for i, item in enumerate(items) if item["record"]["record_id"] == (record_id or request.args.get("record"))), 0)
+        item = items[position] if items else None
+        if item and submitted is not None:
+            item = dict(item, postings=submitted)
+        return render_template("predictions.html", tab="predictions", scan=scan,
+            item=item, position=position,
+            training=learning_model.training_summary(app.config["DB_PATH"]))
+
     @app.context_processor
     def shared_context():
         accounts = database.get_accounts(app.config["DB_PATH"])
@@ -83,7 +103,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
         if tab == "reports":
             return render_template("reports.html", tab=tab, available=app.config["FAVA_AVAILABLE"])
         if tab == "predictions":
-            return render_template("predictions.html", tab=tab, scan=None, training=learning_model.training_summary(app.config["DB_PATH"]))
+            return prediction_page(request.args.get("run") == "1")
         if tab == "rules":
             configured = automation.rules(app.config["DB_PATH"])
             editing = next((r for r in configured if r['id'] == request.args.get('edit', type=int)), None)
@@ -97,12 +117,13 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                         source_account=postings[0]["account"], target_account=postings[1]["account"],
                         source_sign="positive" if Decimal(postings[0]["amount"]) > 0 else "negative"))
             with database.connect(app.config["DB_PATH"]) as db:
+                sources = sorted({r[0] for r in db.execute("SELECT DISTINCT source FROM records")} | set(PARSERS) | {"manual"})
                 history = db.execute("SELECT * FROM automation_log ORDER BY id DESC LIMIT 30").fetchall()
                 learned = db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
                 setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
             return render_template("rules.html", tab=tab, rules=configured, editing=editing,
                 preview=automation.preview(app.config["DB_PATH"]), history=history, learned=learned,
-                learning_enabled=not setting or setting[0] != 'false', parsers=PARSERS, match_fields=automation.available_fields(app.config["DB_PATH"]), operators=automation.OPERATORS)
+                learning_enabled=not setting or setting[0] != 'false', parsers=sources, match_fields=[("*", "Any field")] + automation.available_fields(app.config["DB_PATH"]), operators=automation.OPERATORS)
         if tab == "files":
             return render_template(
                 "files.html",
@@ -115,6 +136,22 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             status = "pending"
         query = request.args.get("q", "")
         records = database.search_rows(app.config["DB_PATH"], status, query) if tab == "search" else (database.review_rows(app.config["DB_PATH"]) if tab == "review" else database.list_records(app.config["DB_PATH"], status, query))
+        filters = {}
+        if tab == "search":
+            try:
+                filters = filtering.definition(request.args)
+                records = filtering.search(app.config["DB_PATH"], request.args)
+                # Match individual source records before collapsing linked events.
+                seen, filtered = set(), []
+                for row in records:
+                    key = database.get_group_id(app.config["DB_PATH"], row["record_id"]) or row["record_id"]
+                    if key not in seen:
+                        filtered.append(row)
+                        seen.add(key)
+                records = filtered
+            except ValueError as error:
+                records = []
+                flash(str(error), "error")
         selected_id = request.args.get("record")
         selected_group_id = request.args.get("group", type=int)
         selected = database.get_group_representative(app.config["DB_PATH"], selected_group_id) if selected_group_id else (database.get_record(app.config["DB_PATH"], selected_id) if selected_id else (records[0] if records and tab == "review" else None))
@@ -142,11 +179,31 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                 table = "records"
                 rows, columns, primary_keys = database.editor_table(app.config["DB_PATH"], table)
             return render_template("database.html", tab=tab, table=table, tables=database.EDITOR_TABLES, rows=rows, columns=columns, primary_keys=primary_keys)
-        return render_template("index.html", suggestion=automation.suggestion(app.config["DB_PATH"], selected), tab=tab, status=status, query=query, records=records, selected=selected, held=held, linked_members=linked_members, selected_group_id=selected_group_id, record_groups=record_groups, review_position=review_position, next_record_id=next_record_id, selected_group_id_query=request.args.get("group", ""), groups=database.get_groups(app.config["DB_PATH"]))
+        quick_hints = automation.account_hints(app.config["DB_PATH"], selected)
+        if linked_members:
+            for role, member in zip(("source","target"), linked_members):
+                member_hints = automation.account_hints(app.config["DB_PATH"], member)
+                if "source" in member_hints:
+                    quick_hints[role] = member_hints["source"]
+                if "fee" in member_hints:
+                    quick_hints.setdefault("fee", member_hints["fee"])
+        return render_template("index.html", filters=filters, filter_suffix=filter_suffix(request.args),
+            match_fields=[("*", "Any field")] + automation.available_fields(app.config["DB_PATH"]),
+            operators=automation.OPERATORS, hints=quick_hints, suggestion=automation.suggestion(app.config["DB_PATH"], selected), tab=tab, status=status, query=query, records=records, selected=selected, held=held, linked_members=linked_members, selected_group_id=selected_group_id, record_groups=record_groups, review_position=review_position, next_record_id=next_record_id, selected_group_id_query=request.args.get("group", ""), groups=database.get_groups(app.config["DB_PATH"]))
 
     @app.post("/predictions/run")
     def run_predictions():
-        return render_template("predictions.html", tab="predictions", scan=automation.scan_pending(app.config["DB_PATH"]), training=learning_model.training_summary(app.config["DB_PATH"]))
+        return prediction_page(True)
+
+    @app.post("/rules/filter-preview")
+    def filter_preview():
+        try:
+            rows = filtering.search(app.config["DB_PATH"], request.form)
+            return jsonify(total=len(rows), records=[
+                {k: r[k] for k in ("record_id", "description", "source", "transaction_date", "amount", "currency", "status")}
+                for r in rows])
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
 
     @app.post("/records/<record_id>/categorize-preview")
     def categorize_preview(record_id):
@@ -180,10 +237,17 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                 flash("Record saved in the database.", "success")
         except ValueError as error:
             flash(str(error), "error")
-            return redirect(url_for("index", tab=request.form.get("return_tab", "review"), record=record_id))
+            if request.form.get("return_tab") == "predictions":
+                submitted = [dict(account=a,amount=m,currency=c) for a,m,c in zip(
+                    request.form.getlist("posting_account"), request.form.getlist("posting_amount"),
+                    request.form.getlist("posting_currency"))]
+                return prediction_page(True, record_id, submitted)
+            return redirect(url_for("index", tab=request.form.get("return_tab", "review"), record=record_id) + saved_filter_suffix())
         return_tab = request.form.get("return_tab", "review")
+        if return_tab == "predictions":
+            return redirect(url_for("index", tab="predictions", run="1", record=request.form.get("next_record","")))
         next_record = request.form.get("next_record") or (record_id if return_tab != "review" else "")
-        return redirect(url_for("index", tab=return_tab, status=request.form.get("return_status", "all"), q=request.form.get("return_q", ""), record=next_record))
+        return redirect(url_for("index", tab=return_tab, status=request.form.get("return_status", "all"), q=request.form.get("return_q", ""), record=next_record) + (saved_filter_suffix() if return_tab == "search" else ""))
 
     @app.post("/groups/<int:group_id>/save")
     def save_group(group_id: int):
@@ -195,7 +259,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(str(error), "error")
             return redirect(url_for("index", tab="search", group=group_id))
         flash(f"Linked event group #{group_id} saved.", "success")
-        return redirect(url_for("index", tab="search", status=request.form.get("return_status", "all"), q=request.form.get("return_q", ""), group=group_id))
+        return redirect(url_for("index", tab="search", status=request.form.get("return_status", "all"), q=request.form.get("return_q", ""), group=group_id) + saved_filter_suffix())
 
     @app.post("/records/bulk-save")
     def save_records_bulk():
@@ -211,7 +275,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(f"Saved accounting postings for {len(record_ids)} record(s).", "success")
         except ValueError as error:
             flash(str(error), "error")
-        return redirect(url_for("index", tab="search", status=request.form.get("return_status", "all"), q=request.form.get("return_q", "")))
+        return redirect(url_for("index", tab="search", status=request.form.get("return_status", "all"), q=request.form.get("return_q", "")) + saved_filter_suffix())
 
     @app.post("/records/<record_id>/keep")
     def keep_record(record_id: str):
@@ -226,7 +290,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(f"Linked event group #{group_id} created. Source records were preserved.", "success")
         except ValueError as error:
             flash(str(error), "error")
-        return redirect(url_for("index", tab=request.form.get("return_tab", "review"), status=request.form.get("return_status", "pending"), q=request.form.get("return_q", ""), group=group_id))
+        return redirect(url_for("index", tab=request.form.get("return_tab", "review"), status=request.form.get("return_status", "pending"), q=request.form.get("return_q", ""), group=group_id) + saved_filter_suffix())
 
     @app.post("/groups/<int:group_id>/unlink")
     def unlink_group(group_id: int):
@@ -237,9 +301,9 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     @app.post("/accounts/save")
     def save_account():
         try:
-            database.save_account(app.config["DB_PATH"], request.form["name"], request.form.get("currency", ""), request.form.get("description", ""), request.form.get("open_date"), request.form.get("original_name") or None)
+            database.save_account(app.config["DB_PATH"], request.form["name"], request.form.get("currency", ""), request.form.get("description", ""), request.form.get("open_date"), request.form.get("original_name") or None, ledger_paths=[app.config["LEDGER_PATH"], app.config["ACCOUNTS_PATH"], app.config["POSTS_PATH"]])
             flash("Account saved.", "success")
-        except ValueError as error:
+        except (ValueError, OSError, sqlite3.Error) as error:
             flash(str(error), "error")
         return redirect(url_for("index", tab="accounts"))
 
@@ -447,7 +511,7 @@ def _postings_from_form() -> list[dict[str, str]]:
     for account, amount, currency in zip(accounts, amounts, currencies):
         if not account.strip() and not amount.strip():
             continue
-        if not all(v.strip() for v in (account, amount, currency)):
+        if request.form.get("status") != "pending" and not all(v.strip() for v in (account, amount, currency)):
             raise ValueError("Complete the account, amount, and currency on each posting.")
         postings.append({"account": account.strip(), "amount": amount.strip(), "currency": currency.strip()})
     if not (len(accounts) == len(amounts) == len(currencies)):

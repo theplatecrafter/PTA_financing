@@ -296,7 +296,7 @@ def get_accounts(path: Path) -> list[sqlite3.Row]:
         return db.execute("SELECT * FROM accounts ORDER BY name").fetchall()
 
 
-def save_account(path: Path, name: str, currency: str, description: str, open_date: str | None = None, original_name: str | None = None) -> None:
+def save_account(path: Path, name: str, currency: str, description: str, open_date: str | None = None, original_name: str | None = None, ledger_paths=()) -> None:
     name = ":".join(part.strip() for part in name.split(":") if part.strip())
     from .validation import ACCOUNT, CURRENCY
     if not ACCOUNT.fullmatch(name):
@@ -312,11 +312,10 @@ def save_account(path: Path, name: str, currency: str, description: str, open_da
     parent = name.rsplit(":", 1)[0] if ":" in name else ""
     with connect(path) as db:
         if original_name and original_name != name:
-            if db.execute("SELECT 1 FROM accounts WHERE name=?", (name,)).fetchone():
-                raise ValueError("An account with this name already exists.")
-            _require_unused_account(db, original_name)
-            db.execute("UPDATE accounts SET name=?, parent=?, currency=?, description=?, open_date=? WHERE name=?", (name, parent, currency or None, description, open_date, original_name))
-            db.execute("UPDATE accounts SET parent=? WHERE parent=?", (name, original_name))
+            from .account_rename import rename_transaction
+            with rename_transaction(db, original_name, name, ledger_paths):
+                db.execute("UPDATE accounts SET currency=?,description=?,open_date=? WHERE name=?",
+                           (currency or None, description, open_date, name))
         else:
             db.execute("INSERT INTO accounts(name,parent,currency,description,open_date,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET currency=excluded.currency, description=excluded.description, open_date=excluded.open_date", (name, parent, currency or None, description, open_date, datetime.now().isoformat(timespec="seconds")))
 
@@ -469,5 +468,5 @@ def _require_unused_account(db, name):
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='rules'").fetchone():
         for row in db.execute("SELECT definition FROM rules"):
             definition = json.loads(row[0])
-            if name in (definition.get("source_account"), definition.get("target_account")):
+            if name in (definition.get("source_account"), definition.get("target_account"), definition.get("account")):
                 raise ValueError("This account is used by a rule. Update the rule first.")

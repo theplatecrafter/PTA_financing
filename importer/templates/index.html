@@ -159,18 +159,20 @@
                     <div class="list-heading">
                         <p class="eyebrow">{% if tab == 'review' %}REVIEW QUEUE{% else %}RECORDS{% endif %}</p>
                         <h1>{{ 'Pending records' if tab == 'review' else 'Transactions' }}</h1>
-                        <form class="search" method="get"><input type="hidden" name="tab" value="{{ tab }}"><input
+                        <form class="search advanced-search" method="get"><input type="hidden" name="tab" value="{{ tab }}"><input
                                 name="q" value="{{ query }}" aria-label="Search transactions" placeholder="Search merchant, description, or source…">{% if tab ==
                             'search' %}<select name="status" aria-label="Transaction status">
                                 <option value="all">All statuses</option>{% for item in
                                 ['pending','held','linked','resolved','synced','ignored'] %}<option value="{{ item }}"
                                     {% if status==item %}selected{% endif %}>{{ item }}</option>{% endfor %}
-                            </select>{% endif %}<button>Filter</button></form>
+                            </select>{% endif %}
+{% if tab == 'search' %}{% include 'search_filters.html' %}{% endif %}
+<button>Search transactions</button><a href="{{ url_for('index',tab='search') }}">Clear filters</a></form>
                     </div>
-                    {% if tab == 'search' %}<form id="bulk-search-form" method="post" action="{{ url_for('save_records_bulk') }}"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}"></form><div class="bulk-select"><button type="button" onclick="toggleAllSearch()">Select all</button><span id="search-selection-count">0 selected</span></div>{% endif %}
+                    {% if tab == 'search' %}<form id="bulk-search-form" method="post" action="{{ url_for('save_records_bulk') }}"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_filters" value="{{ filter_suffix }}"></form><div class="bulk-select"><button type="button" onclick="toggleAllSearch()">Select all</button><span id="search-selection-count">0 selected</span></div>{% endif %}
                     {% for record in records %}{% set payload = json.loads(record['payload']) %}<a
                         class="record {% if selected and selected['record_id'] == record['record_id'] %}selected{% endif %}"
-                        href="{{ url_for('index', tab=tab, status=status, record=record['record_id'], q=query) }}"><span
+                        href="{{ url_for('index', tab=tab, status=status, record=record['record_id'], q=query) }}&amp;{{ filter_suffix }}"><span
                             class="date">{% if tab == 'search' %}<input form="bulk-search-form" type="checkbox" aria-label="Select transaction" name="selected_record_id" value="{{ record['record_id'] }}" onclick="handleSearchCheckbox(event, this)">{% endif %}{{ record['transaction_date'] }}<br>{{ payload.get('time','') }}</span><span
                             class="record-main"><strong>{{ record['description'] or 'No description'
                                 }}</strong><small>{{ record['source'] }} · {{ payload.get('counterparty') or 'No
@@ -188,7 +190,7 @@
                     </p>
                     {% if tab == 'search' and selected_group_id %}<div class="linked-cards search-linked-cards"><p class="eyebrow">LINKED RECORDS REPRESENTED</p>{% for member in linked_members %}{% set member_payload = json.loads(member['payload']) %}<div class="linked-card"><strong>{{ member['source'] }}</strong><span>{{ member['transaction_date'] }} · {{ member['description'] or 'No description' }}</span><b>{{ member['amount'] or '—' }} {{ member['currency'] or '' }}</b><small>{{ member['record_id'] }} · row {{ member_payload.get('source_row', '—') }}</small></div>{% endfor %}</div>{% endif %}
                     <form method="post" action="{{ url_for('save_group', group_id=selected_group_id) if tab == 'search' and selected_group_id else url_for('save_record', record_id=selected['record_id']) }}">
-                        <input type="hidden" name="return_tab" value="search"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}">
+                        <input type="hidden" name="return_tab" value="search"><input type="hidden" name="return_status" value="{{ status }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_filters" value="{{ filter_suffix }}">
                         {% include "quick_entry.html" %}
 <h3>Postings</h3>
                         <div id="search-postings">{% set saved = (json.loads(selected['accounting_json']) or [{}]) if

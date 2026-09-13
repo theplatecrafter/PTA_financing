@@ -6,3 +6,4 @@
 accounts.beancount
 posts.beancount
 main.beancount
+/tests/__pycache__/

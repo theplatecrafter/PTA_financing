@@ -68,7 +68,7 @@ async function quickCategorize(button) {
 function updateCondition(select) {
   const input = select.closest('.rule-condition').querySelector('[name="condition_pattern"]');
   const needsValue = !['empty', 'exists'].includes(select.value);
-  input.required = needsValue;
+  input.required = needsValue && !!select.closest(".rule-form");
   input.readOnly = !needsValue;
   input.placeholder = needsValue ? 'Matching value' : 'No value needed';
 }
@@ -150,4 +150,40 @@ document.addEventListener('input', event => {
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('form').forEach(showBalance);
   document.querySelectorAll('[name="condition_operator"]').forEach(updateCondition);
+});
+
+function updateRuleAction(select) {
+  const form = select.form;
+  const single = select.value === 'account';
+  form.querySelector('[data-account-action]').hidden = !single;
+  form.querySelector('[data-transaction-action]').hidden = single;
+  form.querySelectorAll('[data-transaction-action] [required]').forEach(el => el.required = false);
+  form.querySelectorAll('[data-transaction-action] select').forEach(el => el.disabled = single);
+  form.querySelectorAll('[data-account-action] select').forEach(el => el.disabled = !single);
+}
+async function previewFilters(button) {
+  const dialog = document.getElementById('filter-preview');
+  const output = dialog.querySelector('.filter-results');
+  output.textContent = 'Searching…';
+  dialog.showModal();
+  try {
+    const response = await fetch(button.dataset.url, {method: 'POST', body: new FormData(button.form)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Search failed.');
+    output.replaceChildren();
+    const count = document.createElement('p');
+    count.textContent = data.total + ' matching transactions';
+    output.append(count);
+    for (const record of data.records) {
+      const link = document.createElement('a');
+      link.className = 'filter-result';
+      link.href = '/?' + new URLSearchParams({tab:'search',record:record.record_id});
+      link.target = '_blank'; link.rel = 'noopener';
+      link.textContent = [record.transaction_date,record.description,record.source,record.amount,record.currency,record.status].join(' · ');
+      output.append(link);
+    }
+  } catch (error) { output.textContent = error.message; }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('select[name="action"]').forEach(updateRuleAction);
 });

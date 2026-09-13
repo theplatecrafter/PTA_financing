@@ -95,9 +95,26 @@ def available_fields(path):
 
 
 def condition_matches(condition, row):
-    value = field_value(row, condition["field"])
+    if condition["field"] == "*":
+        def leaves(value):
+            if isinstance(value, dict):
+                return [v for child in value.values() for v in leaves(child)]
+            if isinstance(value, list):
+                return [v for child in value for v in leaves(child)]
+            return [value]
+        values = leaves(parsed_values(row))
+        # Negative predicates mean no field contains/equal the value.
+        op = condition["operator"]
+        if op in ("not_contains", "not_equals", "empty"):
+            positive = {"not_contains": "contains", "not_equals": "equals", "empty": "exists"}[op]
+            return not any(value_matches(v, positive, condition.get("pattern", "")) for v in values)
+        return any(value_matches(v, op, condition.get("pattern", "")) for v in values)
+    return value_matches(field_value(row, condition["field"]), condition["operator"], condition.get("pattern", ""))
+
+
+def value_matches(value, op, pattern):
+
     empty = value is None or value == "" or value == [] or value == {}
-    op, pattern = condition["operator"], condition.get("pattern", "")
     if op == "empty":
         return empty
     if op == "exists":
@@ -131,7 +148,7 @@ def save_rule(path, form):
         filters = [dict(field=f.strip(), operator=o, pattern=p.strip()) for f, o, p in zip(fields, operators, patterns)]
     else:
         filters = conditions(definition)
-    allowed = dict(available_fields(path))
+    allowed = {"*": "Any field", **dict(available_fields(path))}
     if not name or not filters:
         raise ValueError("Give the rule a name and at least one filter.")
     for condition in filters:
@@ -151,13 +168,22 @@ def save_rule(path, form):
         raise ValueError("Choose a valid rule mode and filter combination.")
     if definition["direction"] not in ("any", "positive", "negative"):
         raise ValueError("Choose a valid amount direction.")
-    if definition['source_sign'] not in ('positive', 'negative'):
-        raise ValueError('Choose whether the source account increases or decreases.')
+    definition["action"] = form.get("action", "transaction")
+    definition["account"] = form.get("account", "").strip()
+    definition["account_role"] = form.get("account_role", "target")
     accounts = {row['name'] for row in database.get_accounts(path)}
-    if any(definition[k] not in accounts for k in ('source_account', 'target_account')):
-        raise ValueError('Create both accounts in Accounts before saving a rule.')
-    if definition['source_account'] == definition['target_account']:
-        raise ValueError('Choose two different accounts.')
+    if definition["action"] == "account":
+        if definition["account"] not in accounts or definition["account_role"] not in ("source", "target", "fee"):
+            raise ValueError("Choose an existing account and its posting role.")
+    elif definition["action"] == "transaction":
+        if definition['source_sign'] not in ('positive', 'negative'):
+            raise ValueError('Choose whether the source account increases or decreases.')
+        if any(definition[k] not in accounts for k in ('source_account', 'target_account')):
+            raise ValueError('Create both accounts in Accounts before saving a rule.')
+        if definition['source_account'] == definition['target_account']:
+            raise ValueError('Choose two different accounts.')
+    else:
+        raise ValueError("Choose a valid rule action.")
     try:
         priority = int(form.get('priority', '100'))
         bounds = [Decimal(definition[k]) if definition[k] else None for k in ('minimum', 'maximum')]
@@ -188,18 +214,13 @@ def simple_record(row):
 
 
 def matches(rule, row):
-    d = rule['definition']
-    if not rule['enabled'] or not simple_record(row):
+    from .filtering import matches as filter_matches
+    d = rule["definition"]
+    if not rule["enabled"]:
         return False
-    if d['source'] and d['source'] != row['source'] or d['currency'] and d['currency'] != row['currency']:
+    if d.get("action", "transaction") == "transaction" and not simple_record(row):
         return False
-    amount = Decimal(row['amount'])
-    if d['direction'] == 'positive' and amount <= 0 or d['direction'] == 'negative' and amount >= 0:
-        return False
-    if d['minimum'] and abs(amount) < Decimal(d['minimum']) or d['maximum'] and abs(amount) > Decimal(d['maximum']):
-        return False
-    matched = [condition_matches(condition, row) for condition in conditions(d)]
-    return bool(matched) and (any(matched) if d.get("match_mode", "all") == "any" else all(matched))
+    return filter_matches(dict(d, conditions=conditions(d)), row)
 
 
 def rule_postings(rule, row):
@@ -219,7 +240,7 @@ def preview(path, record_ids=None):
     for row in rows:
         if record_ids is not None and row['record_id'] not in record_ids:
             continue
-        matched = [rule for rule in configured if matches(rule, row)]
+        matched = [rule for rule in configured if rule["definition"].get("action") != "account" and matches(rule, row)]
         if not matched:
             continue
         rule, error = matched[0], ''
@@ -319,7 +340,7 @@ def suggestion(path, row, examples=None, profiles=None):
     if not row or row['status'] != 'pending' or (row['accounting_json'] and json.loads(row['accounting_json'])) or database.get_group_id(path, row['record_id']):
         return None
     for rule in rules(path):
-        if matches(rule, row):
+        if rule["definition"].get("action") != "account" and matches(rule, row):
             postings = rule_postings(rule, row)
             try:
                 database.validate_postings(path, postings, row['transaction_date'])
@@ -328,9 +349,44 @@ def suggestion(path, row, examples=None, profiles=None):
             return {'postings': postings, 'reason': 'Rule: ' + rule['name'], 'kind': 'rule'}
     with database.connect(path) as db:
         setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
-        if setting and setting[0] == "false":
-            return None
-    return learning.predict(path, row, examples if examples is not None else learning.load_examples(path), profiles)
+        enabled = not setting or setting[0] != "false"
+    predicted = learning.predict(path, row, examples if examples is not None else learning.load_examples(path), profiles) if enabled else None
+    hints = account_hints(path, row)
+    if not hints:
+        return predicted
+    postings = [dict(p) for p in predicted["postings"]] if predicted else []
+    # Learned layouts are sorted by account name, not by posting role.
+    source_index = next((i for i,p in enumerate(postings) if p["account"].startswith(("Assets:", "Liabilities:"))), 0)
+    target_index = next((i for i in range(len(postings)) if i != source_index), 1)
+    for role, hint in hints.items():
+        index = {"source": source_index, "target": target_index, "fee": max(2,len(postings))}[role]
+        existing = next((i for i,p in enumerate(postings) if p["account"] == hint["account"]), None)
+        if existing is not None:
+            continue
+        if predicted and len(predicted["postings"]) > 2:
+            index = len(postings)
+        while len(postings) <= index:
+            postings.append(dict(account="", amount="", currency=row["currency"] or ""))
+        postings[index]["account"] = hint["account"]
+    # Account rules provide account choices only, never invented fee/FX amounts.
+    if not predicted or "fee" in hints or len({p["account"] for p in postings}) != len(postings):
+        for p in postings:
+            p["amount"] = ""
+    return dict(postings=postings, kind="rule", accounts_only=any(not p["amount"] for p in postings),
+                reason="Account rules: " + ", ".join(h["name"] for h in hints.values()) +
+                ("; remaining fields from learned suggestion." if predicted else ". Confirm amounts before resolving."))
+
+
+def account_hints(path, row):
+    """Independent account rules compose by role; first priority wins per role."""
+    result = {}
+    if not row:
+        return result
+    for rule in rules(path):
+        d = rule["definition"]
+        if d.get("action") == "account" and matches(rule, row):
+            result.setdefault(d["account_role"], dict(account=d["account"], name=rule["name"]))
+    return result
 
 
 
