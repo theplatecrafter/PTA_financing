@@ -2,6 +2,7 @@
 /importer/__pycache__
 /venv
 /state
+/saving
 
 accounts.beancount
 posts.beancount

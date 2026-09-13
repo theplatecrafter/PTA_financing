@@ -135,6 +135,8 @@ blank for manual completion. Account and currency validation still applies.
 
 Default state: state/importer.db. Set IMPORTER_DB_PATH for an isolated database.
 Keep backups before using the advanced Database editor or direct file editor.
+Temporary uploads and rollback files are stored under the repository-local
+`saving/` directory and removed when no longer needed.
 
 Generated transactions use importer markers. Repeated exports replace their
 blocks without duplication, including linked groups and legacy record markers.

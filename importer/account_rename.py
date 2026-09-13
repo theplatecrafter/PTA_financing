@@ -7,6 +7,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from . import database
+from .storage import ensure_saving_dir
 
 ACCOUNT_TOKEN = re.compile(r"(?<![\w:-])(?:Assets|Liabilities|Equity|Income|Expenses)(?::[\w-]+)+(?![\w:-])")
 INCLUDE = re.compile(r'^\s*include\s+"([^"]+)"', re.MULTILINE)
@@ -62,7 +63,7 @@ def ledger_files(paths):
 
 
 def replace_file(path, content):
-    fd, staged = tempfile.mkstemp(prefix=".account-rename-", dir=path.parent)
+    fd, staged = tempfile.mkstemp(prefix=".account-rename-", dir=ensure_saving_dir())
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as output:
             output.write(content)

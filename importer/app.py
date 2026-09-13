@@ -13,6 +13,7 @@ from urllib.parse import urlencode, parse_qsl
 from flask import abort, Flask, flash, redirect, render_template, request, url_for, jsonify
 
 from . import database, ledger, automation, categorization, filtering, learning as learning_model
+from .storage import ensure_saving_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 PARSERS = {
@@ -421,7 +422,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash("Choose a CSV file and parser.", "error")
             return redirect(url_for("index", tab="sync"))
         from tempfile import NamedTemporaryFile
-        with NamedTemporaryFile(suffix=".csv", delete=False) as temporary_file:
+        with NamedTemporaryFile(suffix=".csv", dir=ensure_saving_dir(), delete=False) as temporary_file:
             temporary = Path(temporary_file.name)
         upload.save(temporary)
         try:

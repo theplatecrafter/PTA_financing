@@ -60,7 +60,8 @@ s = s.replace('        exported = ledger.export_all(app.config["DB_PATH"], app.c
             flash(f"Export stopped: {error}", "error")
             return redirect(url_for("index", tab="sync"))''')
 s = s.replace('        temporary = ROOT / "state" / "uploads" / upload.filename\n        temporary.parent.mkdir(parents=True, exist_ok=True)', '''        from tempfile import NamedTemporaryFile
-        with NamedTemporaryFile(suffix=".csv", delete=False) as temporary_file:
+        (ROOT / "saving").mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(suffix=".csv", dir=ROOT / "saving", delete=False) as temporary_file:
             temporary = Path(temporary_file.name)''')
 s = s.replace('            new_count, duplicate_count = database.add_records(app.config["DB_PATH"], records)', '''            new_count, duplicate_count = database.add_records(app.config["DB_PATH"], records)
             applied = automation.apply(app.config["DB_PATH"], {r.record_id for r in records})

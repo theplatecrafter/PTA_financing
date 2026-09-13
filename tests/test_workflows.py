@@ -7,14 +7,17 @@ from types import SimpleNamespace
 from datetime import date
 from decimal import Decimal
 
-_boot = tempfile.TemporaryDirectory()
+_test_saving = Path(__file__).resolve().parents[1] / "saving" / "tests"
+_test_saving.mkdir(parents=True, exist_ok=True)
+_boot = tempfile.TemporaryDirectory(dir=_test_saving)
 os.environ["IMPORTER_DB_PATH"] = str(Path(_boot.name) / "boot.db")
 from importer import database, automation, ledger, categorization, learning
 from importer.app import create_app
+from importer.sumitomo_credit_card import parse_foreign_currency
 
 class Workflows(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=_test_saving)
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "test.db"
         self.app = create_app(self.path)
@@ -55,6 +58,15 @@ class Workflows(unittest.TestCase):
                 self.assertEqual(response.status_code,200)
         self.assertIn(b'name="posting_amount"', self.client.get("/?tab=review").data)
         self.assertEqual(self.client.post("/records/missing/save").status_code,404)
+
+    def test_sumitomo_credit_card_foreign_currency_date(self):
+        self.assertEqual(
+            parse_foreign_currency(
+                "7590.00\u3000JPY\u30001.0000\u300009 05",
+                date(2025, 9, 2),
+            ),
+            (Decimal("7590.00"), "JPY", Decimal("1.0000"), date(2025, 9, 5)),
+        )
 
     def test_search_and_database_editor_are_paged(self):
         for index in range(105):

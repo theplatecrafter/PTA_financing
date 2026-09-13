@@ -210,7 +210,7 @@ def parse_foreign_currency(
     # Sumitomo uses full-width Japanese spaces.
     parts = re.split(r"\s+", value)
 
-    if len(parts) != 4:
+    if len(parts) != 5:
         raise ValueError(
             f"Unexpected foreign-currency format: {value!r}"
         )
@@ -219,7 +219,7 @@ def parse_foreign_currency(
     source_currency = parts[1]
     exchange_rate = Decimal(parts[2])
 
-    month, day = map(int, parts[3].split())
+    month, day = map(int, parts[3:5])
 
     conversion_date = date(
         transaction_date.year,
