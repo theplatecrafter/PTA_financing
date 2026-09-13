@@ -1,3 +1,14 @@
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.pagination a {
+  color: var(--accent);
+}
 :root {
   --ink: #203530; --muted: #64756f; --line: #dce5e0; --paper: #f5f7f5;
   --panel: #fff; --accent: #246855; --accent-dark: #164c3d; --mint: #e9f3ed;

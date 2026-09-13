@@ -60,6 +60,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     database.initialize_database(app.config["DB_PATH"])
     automation.initialize(app.config["DB_PATH"])
     app.config["LEDGER_PATH"] = Path(ledger_path or ROOT / "main.beancount")
+    scan_cache = {"model": None, "rules": None}
     try:
         from fava.application import create_app as create_fava
         from werkzeug.middleware.dispatcher import DispatcherMiddleware
@@ -69,7 +70,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     except ImportError:
         app.config["FAVA_AVAILABLE"] = False
 
-    filter_keys = {"condition_field", "condition_operator", "condition_pattern", "match_mode", "direction", "minimum", "maximum", "source", "currency"}
+    filter_keys = {"condition_field", "condition_operator", "condition_pattern", "match_mode", "direction", "minimum", "maximum", "source", "currency", "posting_account"}
 
     def filter_suffix(form):
         return urlencode([(k, v) for k, values in form.lists() if k in filter_keys for v in values])
@@ -77,16 +78,43 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     def saved_filter_suffix():
         return "&" + urlencode([(k,v) for k,v in parse_qsl(request.form.get("return_filters", ""), keep_blank_values=True) if k in filter_keys])
 
+    def page_number(value):
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 1
+
+    def page_url(tab, page, **values):
+        args = request.args.to_dict(flat=False)
+        args.update({key: [str(value)] for key, value in values.items()})
+        args["tab"] = [tab]
+        args["page"] = [str(page)]
+        return url_for("index", **args)
+
     def prediction_page(run=False, record_id=None, submitted=None):
-        scan = automation.scan_pending(app.config["DB_PATH"]) if run else None
+        if run:
+            scan_cache["model"] = automation.scan_pending(app.config["DB_PATH"])
+        scan = scan_cache["model"]
         items = scan["results"] if scan else []
         position = next((i for i, item in enumerate(items) if item["record"]["record_id"] == (record_id or request.args.get("record"))), 0)
         item = items[position] if items else None
         if item and submitted is not None:
             item = dict(item, postings=submitted)
+        with database.connect(app.config["DB_PATH"]) as db:
+            setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
         return render_template("predictions.html", tab="predictions", scan=scan,
             item=item, position=position,
-            training=learning_model.training_summary(app.config["DB_PATH"]))
+            training=learning_model.training_summary(app.config["DB_PATH"]),
+            learning_enabled=not setting or setting[0] != 'false')
+
+    def remove_cached_record(record_id):
+        for key in ("model", "rules"):
+            scan = scan_cache[key]
+            if not scan:
+                continue
+            scan["results"] = [item for item in scan["results"] if item["record"]["record_id"] != record_id]
+            if "total" in scan:
+                scan["total"] = max(0, scan["total"] - 1)
 
     @app.context_processor
     def shared_context():
@@ -106,6 +134,11 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             return prediction_page(request.args.get("run") == "1")
         if tab == "rules":
             configured = automation.rules(app.config["DB_PATH"])
+            if scan_cache["rules"] is None:
+                scan_cache["rules"] = automation.scan_rules(app.config["DB_PATH"])
+            rule_scan = scan_cache["rules"]
+            rule_position = next((i for i, item in enumerate(rule_scan) if item["record"]["record_id"] == request.args.get("record")), 0)
+            rule_item = rule_scan[rule_position] if rule_scan else None
             editing = next((r for r in configured if r['id'] == request.args.get('edit', type=int)), None)
             seed = database.get_record(app.config["DB_PATH"], request.args.get("from_record", ""))
             if not editing and seed and automation.simple_record(seed) and not database.get_group_id(app.config["DB_PATH"], seed["record_id"]):
@@ -122,7 +155,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                 learned = db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
                 setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
             return render_template("rules.html", tab=tab, rules=configured, editing=editing,
-                preview=automation.preview(app.config["DB_PATH"]), history=history, learned=learned,
+                preview=rule_scan, rule_scan=rule_scan, rule_item=rule_item, rule_position=rule_position, history=history, learned=learned,
                 learning_enabled=not setting or setting[0] != 'false', parsers=sources, match_fields=[("*", "Any field")] + automation.available_fields(app.config["DB_PATH"]), operators=automation.OPERATORS)
         if tab == "files":
             return render_template(
@@ -135,12 +168,15 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
         if tab == "review":
             status = "pending"
         query = request.args.get("q", "")
-        records = database.search_rows(app.config["DB_PATH"], status, query) if tab == "search" else (database.review_rows(app.config["DB_PATH"]) if tab == "review" else database.list_records(app.config["DB_PATH"], status, query))
+        records = [] if tab == "search" else (database.review_rows(app.config["DB_PATH"]) if tab == "review" else database.list_records(app.config["DB_PATH"], status, query))
         filters = {}
+        search_page_number = page_number(request.args.get("page"))
+        search_page_count = 1
         if tab == "search":
             try:
                 filters = filtering.definition(request.args)
-                records = filtering.search(app.config["DB_PATH"], request.args)
+                records, search_total = filtering.search_page(app.config["DB_PATH"], request.args, search_page_number)
+                search_page_count = max(1, (search_total + 99) // 100)
                 # Match individual source records before collapsing linked events.
                 seen, filtered = set(), []
                 for row in records:
@@ -173,12 +209,13 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                 linked_members = database.get_group_members(app.config["DB_PATH"], selected_group_id)
         if tab == "database":
             table = request.args.get("table", "records")
+            database_page = page_number(request.args.get("page"))
             try:
-                rows, columns, primary_keys = database.editor_table(app.config["DB_PATH"], table)
+                rows, columns, primary_keys, database_total = database.editor_table(app.config["DB_PATH"], table, database_page)
             except ValueError:
                 table = "records"
-                rows, columns, primary_keys = database.editor_table(app.config["DB_PATH"], table)
-            return render_template("database.html", tab=tab, table=table, tables=database.EDITOR_TABLES, rows=rows, columns=columns, primary_keys=primary_keys)
+                rows, columns, primary_keys, database_total = database.editor_table(app.config["DB_PATH"], table, database_page)
+            return render_template("database.html", tab=tab, table=table, tables=database.EDITOR_TABLES, rows=rows, columns=columns, primary_keys=primary_keys, page=database_page, page_count=max(1, (database_total + 99) // 100), page_url=lambda value: page_url("database", value, table=table))
         quick_hints = automation.account_hints(app.config["DB_PATH"], selected)
         if linked_members:
             for role, member in zip(("source","target"), linked_members):
@@ -189,7 +226,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                     quick_hints.setdefault("fee", member_hints["fee"])
         return render_template("index.html", filters=filters, filter_suffix=filter_suffix(request.args),
             match_fields=[("*", "Any field")] + automation.available_fields(app.config["DB_PATH"]),
-            operators=automation.OPERATORS, hints=quick_hints, suggestion=automation.suggestion(app.config["DB_PATH"], selected), tab=tab, status=status, query=query, records=records, selected=selected, held=held, linked_members=linked_members, selected_group_id=selected_group_id, record_groups=record_groups, review_position=review_position, next_record_id=next_record_id, selected_group_id_query=request.args.get("group", ""), groups=database.get_groups(app.config["DB_PATH"]))
+            operators=automation.OPERATORS, hints=quick_hints, suggestion=automation.suggestion(app.config["DB_PATH"], selected), tab=tab, status=status, query=query, records=records, selected=selected, held=held, linked_members=linked_members, selected_group_id=selected_group_id, record_groups=record_groups, review_position=review_position, next_record_id=next_record_id, selected_group_id_query=request.args.get("group", ""), groups=database.get_groups(app.config["DB_PATH"]), page=search_page_number, page_count=search_page_count, page_url=lambda value: page_url("search", value))
 
     @app.post("/predictions/run")
     def run_predictions():
@@ -235,6 +272,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
                 if status == "resolved":
                     automation.learn(app.config["DB_PATH"], database.get_record(app.config["DB_PATH"], record_id), postings)
                 flash("Record saved in the database.", "success")
+            remove_cached_record(record_id)
         except ValueError as error:
             flash(str(error), "error")
             if request.form.get("return_tab") == "predictions":
@@ -245,7 +283,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             return redirect(url_for("index", tab=request.form.get("return_tab", "review"), record=record_id) + saved_filter_suffix())
         return_tab = request.form.get("return_tab", "review")
         if return_tab == "predictions":
-            return redirect(url_for("index", tab="predictions", run="1", record=request.form.get("next_record","")))
+            return redirect(url_for("index", tab="predictions", record=request.form.get("next_record","")))
         next_record = request.form.get("next_record") or (record_id if return_tab != "review" else "")
         return redirect(url_for("index", tab=return_tab, status=request.form.get("return_status", "all"), q=request.form.get("return_q", ""), record=next_record) + (saved_filter_suffix() if return_tab == "search" else ""))
 
@@ -307,12 +345,12 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(str(error), "error")
         return redirect(url_for("index", tab="accounts"))
 
-    @app.post("/accounts/delete")
-    def remove_account():
+    @app.post("/accounts/merge")
+    def merge_accounts():
         try:
-            database.delete_account(app.config["DB_PATH"], request.form["name"])
-            flash("Account deleted.", "success")
-        except ValueError as error:
+            database.merge_account(app.config["DB_PATH"], request.form["source"], request.form["destination"], request.form["name"], request.form.get("currency", ""), ledger_paths=[app.config["LEDGER_PATH"], app.config["ACCOUNTS_PATH"], app.config["POSTS_PATH"]])
+            flash("Accounts merged.", "success")
+        except (ValueError, OSError, sqlite3.Error) as error:
             flash(str(error), "error")
         return redirect(url_for("index", tab="accounts"))
 
@@ -326,7 +364,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash("Database row updated.", "success")
         except (ValueError, sqlite3.Error) as error:
             flash(f"Could not update row: {error}", "error")
-        return redirect(url_for("index", tab="database", table=table))
+        return redirect(url_for("index", tab="database", table=table, page=page_number(request.form.get("page"))))
 
     @app.post("/database/<table>/add")
     def database_add(table: str):
@@ -336,7 +374,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash("Database row added.", "success")
         except (ValueError, sqlite3.Error) as error:
             flash(f"Could not add row: {error}", "error")
-        return redirect(url_for("index", tab="database", table=table))
+        return redirect(url_for("index", tab="database", table=table, page=page_number(request.form.get("page"))))
 
     @app.post("/database/<table>/delete")
     def database_delete(table: str):
@@ -346,7 +384,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(f"Deleted {deleted} database row(s).", "success")
         except (ValueError, sqlite3.Error) as error:
             flash(f"Could not delete rows: {error}", "error")
-        return redirect(url_for("index", tab="database", table=table))
+        return redirect(url_for("index", tab="database", table=table, page=page_number(request.form.get("page"))))
 
     @app.post("/database/<table>/duplicate")
     def database_duplicate(table: str):
@@ -356,7 +394,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(f"Duplicated {duplicated} database row(s).", "success")
         except (ValueError, sqlite3.Error) as error:
             flash(f"Could not duplicate rows: {error}", "error")
-        return redirect(url_for("index", tab="database", table=table))
+        return redirect(url_for("index", tab="database", table=table, page=page_number(request.form.get("page"))))
 
     @app.post("/execute")
     def execute():
@@ -401,6 +439,8 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash(f"Import failed: {error}", "error")
         finally:
             temporary.unlink(missing_ok=True)
+        scan_cache["model"] = None
+        scan_cache["rules"] = None
         return redirect(url_for("index", tab="sync"))
 
     @app.post("/manual")
@@ -449,12 +489,14 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             flash("Rule saved. Preview below before applying to pending transactions.", "success")
         except ValueError as error:
             flash(str(error), "error")
+        scan_cache["rules"] = None
         return redirect(url_for("index", tab="rules"))
 
     @app.post("/rules/<int:rule_id>/toggle")
     def toggle_rule(rule_id):
         with database.connect(app.config["DB_PATH"]) as db:
             db.execute("UPDATE rules SET enabled=1-enabled WHERE id=?", (rule_id,))
+        scan_cache["rules"] = None
         return redirect(url_for("index", tab="rules"))
 
     @app.post("/rules/<int:rule_id>/delete")
@@ -462,13 +504,22 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
         with database.connect(app.config["DB_PATH"]) as db:
             db.execute("DELETE FROM rules WHERE id=?", (rule_id,))
         flash("Rule deleted. Existing decisions and history are preserved.", "success")
+        scan_cache["rules"] = None
         return redirect(url_for("index", tab="rules"))
 
     @app.post("/rules/apply")
     def apply_rules():
         selected = set(request.form.getlist("record_id"))
         count = automation.apply(app.config["DB_PATH"], selected)
+        scan_cache["rules"] = None
         flash(f"Resolved {count} selected transaction(s). Export when you are ready.", "success")
+        return redirect(url_for("index", tab="rules"))
+
+    @app.post("/rules/execute")
+    def execute_rules():
+        count = automation.apply(app.config["DB_PATH"])
+        scan_cache["rules"] = None
+        flash(f"Executed automatic rules on {count} transaction(s).", "success")
         return redirect(url_for("index", tab="rules"))
 
     @app.post("/rules/history/<int:log_id>/undo")
@@ -483,6 +534,7 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
     @app.post("/learning/rebuild")
     def rebuild_learning():
         count = automation.rebuild_learning(app.config["DB_PATH"])
+        scan_cache["model"] = None
         flash(f"Refreshed parsed-data features for {count} confirmed training example(s). Rules and automatic decisions were not used as labels.", "success")
         return redirect(url_for("index", tab="predictions"))
 
@@ -494,7 +546,8 @@ def create_app(db_path: Path | None = None, ledger_path: Path | None = None) -> 
             if request.form.get('clear'):
                 db.execute("DELETE FROM decisions")
         flash("Learning preferences saved.", "success")
-        return redirect(url_for("index", tab="rules"))
+        scan_cache["model"] = None
+        return redirect(url_for("index", tab="predictions"))
 
     return app
 
@@ -529,4 +582,4 @@ def _bulk_postings_from_form() -> list[dict[str, str]]:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "50001")), debug=False)
+    app.run(host=os.environ.get("HOST", "127.0.0.1"), port=int(os.environ.get("PORT", "50001")), debug=False)

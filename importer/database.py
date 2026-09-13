@@ -171,6 +171,24 @@ def list_records(path: Path, status: str | None = None, query: str = "") -> list
         ).fetchall()
 
 
+def record_batches(path: Path, status: str | None = None, query: str = "", batch_size: int = 100):
+    clauses, values = [], []
+    if status and status != "all":
+        clauses.append("status = ?")
+        values.append(status)
+    if query:
+        clauses.append("(record_id LIKE ? OR source LIKE ? OR description LIKE ? OR payload LIKE ?)")
+        values.extend([f"%{query}%"] * 4)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with connect(path) as db:
+        cursor = db.execute(f"SELECT * FROM records{where} ORDER BY transaction_date DESC, record_id", values)
+        while True:
+            rows = cursor.fetchmany(batch_size)
+            if not rows:
+                break
+            yield from rows
+
+
 def get_record(path: Path, record_id: str) -> sqlite3.Row | None:
     with connect(path) as db:
         return db.execute("SELECT * FROM records WHERE record_id = ?", (record_id,)).fetchone()
@@ -328,6 +346,26 @@ def delete_account(path: Path, name: str) -> None:
         db.execute("DELETE FROM accounts WHERE name=?", (name,))
 
 
+def merge_account(path: Path, source: str, destination: str, name: str, currency: str, ledger_paths=()) -> None:
+    if source == destination:
+        raise ValueError("Choose two different accounts.")
+    name = ":".join(part.strip() for part in name.split(":") if part.strip())
+    from .validation import ACCOUNT, CURRENCY
+    if not ACCOUNT.fullmatch(name):
+        raise ValueError("Use a Beancount account path such as Expenses:Food:Groceries.")
+    currency = ",".join(part.strip().upper() for part in currency.split(",") if part.strip())
+    if currency and any(not CURRENCY.fullmatch(part) for part in currency.split(",")):
+        raise ValueError("Use currency codes separated by commas, such as USD,JPY.")
+    from .account_rename import merge_transaction
+    with connect(path) as db:
+        rows = db.execute("SELECT open_date FROM accounts WHERE name IN (?,?)", (source, destination)).fetchall()
+        if len(rows) != 2:
+            raise ValueError("Choose two existing accounts.")
+        open_date = min(row[0] for row in rows)
+        with merge_transaction(db, source, destination, name, currency, open_date, ledger_paths):
+            pass
+
+
 def link_records(path: Path, record_ids: list[str]) -> int:
     if len(record_ids) < 2 or len(set(record_ids)) != len(record_ids):
         raise ValueError("Select at least two different records")
@@ -379,15 +417,20 @@ EDITOR_TABLES = (
 )
 
 
-def editor_table(path: Path, table: str) -> tuple[list[sqlite3.Row], list[str], list[str]]:
+def editor_table(path: Path, table: str, page: int | None = None, page_size: int = 100) -> tuple[list[sqlite3.Row], list[str], list[str], int] | tuple[list[sqlite3.Row], list[str], list[str]]:
     if table not in EDITOR_TABLES:
         raise ValueError("Unknown database table")
     with connect(path) as db:
         columns = db.execute(f"PRAGMA table_info([{table}])").fetchall()
         names = [column[1] for column in columns]
         primary_keys = [column[1] for column in columns if column[5]]
-        rows = db.execute(f"SELECT * FROM [{table}] ORDER BY rowid DESC" if table != "event_members" and table != "record_links" else f"SELECT * FROM [{table}]").fetchall()
-    return rows, names, primary_keys
+        order = " ORDER BY rowid DESC" if table != "event_members" and table != "record_links" else ""
+        if page is None:
+            rows = db.execute(f"SELECT * FROM [{table}]" + order).fetchall()
+            return rows, names, primary_keys
+        total = db.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
+        rows = db.execute(f"SELECT * FROM [{table}]" + order + " LIMIT ? OFFSET ?", (page_size, (page - 1) * page_size)).fetchall()
+    return rows, names, primary_keys, total
 
 
 def editor_update(path: Path, table: str, original: dict[str, str], values: dict[str, str]) -> None:

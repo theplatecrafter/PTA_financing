@@ -23,7 +23,7 @@
 <p class="quick-error" role="alert" hidden></p>
 </details></div>
 {% if suggestion %}
-<div class="suggestion"><p class="eyebrow">{{ 'MATCHING RULE' if suggestion.kind == 'rule' else 'LEARNED SUGGESTION' }}</p><p>{{ suggestion.reason }}</p>{% if suggestion.matched_fields %}<p class="muted">Matching evidence: {{ suggestion.matched_fields|join(', ') }}</p>{% endif %}
+<div class="suggestion"><p class="eyebrow">{{ 'MATCHING RULE' if suggestion.kind == 'rule' else 'MODEL SUGGESTION' }}</p><p>{{ suggestion.reason }}</p>{% if suggestion.matched_fields %}<p class="muted">Matching evidence: {{ suggestion.matched_fields|join(', ') }}</p>{% endif %}
 {% if suggestion.accounts_only %}<p><strong>Accounts only:</strong> enter amounts for all postings, including fees and conversions.</p>{% endif %}{% for posting in suggestion.postings %}<div class="example-posting"><span>{{ posting.account }}</span><b>{{ posting.amount or "Enter amount" }} {{ posting.currency }}</b></div>{% endfor %}<button type="button" data-postings="{{ suggestion.postings|tojson|forceescape }}" onclick="useSuggestion(this)">Use suggestion</button><small>Check the postings, then resolve to confirm.</small></div>
 {% endif %}
 

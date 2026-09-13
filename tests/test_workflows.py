@@ -56,6 +56,22 @@ class Workflows(unittest.TestCase):
         self.assertIn(b'name="posting_amount"', self.client.get("/?tab=review").data)
         self.assertEqual(self.client.post("/records/missing/save").status_code,404)
 
+    def test_search_and_database_editor_are_paged(self):
+        for index in range(105):
+            self.record(f"bulk:{index}")
+        first_search = self.client.get("/?tab=search&page=1")
+        second_search = self.client.get("/?tab=search&page=2")
+        self.assertEqual(first_search.status_code, 200)
+        self.assertEqual(second_search.status_code, 200)
+        self.assertIn(b"Page 1 of 2", first_search.data)
+        self.assertIn(b"Page 2 of 2", second_search.data)
+        first_database = self.client.get("/?tab=database&table=records&page=1")
+        second_database = self.client.get("/?tab=database&table=records&page=2")
+        self.assertEqual(first_database.status_code, 200)
+        self.assertEqual(second_database.status_code, 200)
+        self.assertIn(b"Page 1 of 2", first_database.data)
+        self.assertIn(b"Page 2 of 2", second_database.data)
+
     def test_priority_confirmation_and_undo(self):
         self.record()
         self.rule(mode="suggest",priority="1")
@@ -267,7 +283,7 @@ class Workflows(unittest.TestCase):
         self.assertEqual(response.status_code,200)
         self.assertIn(b"Learned suggestion",response.data)
         self.rule(mode="suggest")
-        self.assertEqual(automation.scan_pending(self.path)["results"][0]["kind"],"rule")
+        self.assertEqual(automation.scan_pending(self.path)["results"][0]["kind"],"learned")
         with database.connect(self.path) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0],3)
 

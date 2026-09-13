@@ -34,6 +34,17 @@ class ExpandedWorkflows(unittest.TestCase):
         form.setlist("condition_pattern",["NaN"])
         self.assertEqual(self.client.post("/rules/filter-preview",data=form).status_code,400)
 
+    def test_posting_account_filter(self):
+        self.record("categorized")
+        database.update_record(self.path, "categorized", "resolved", self.postings())
+        self.record("uncategorized")
+        form = MultiDict({"posting_account": "Expenses:Food", "status": "all"})
+        self.assertEqual([r["record_id"] for r in filtering.search(self.path, form)], ["categorized"])
+        page = self.client.get("/", query_string={"tab": "search", **form.to_dict()})
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"categorized", page.data)
+        self.assertNotIn(b"uncategorized", page.data)
+
     def test_preview_includes_complex_and_saved_records(self):
         self.record(fee_amount="2", source_currency="USD", target_currency="JPY")
         database.update_record(self.path,"bank:1","held",None)
@@ -56,6 +67,20 @@ class ExpandedWorkflows(unittest.TestCase):
         self.assertIn(b"selected>Assets:Bank",page.data)
         with self.assertRaises(ValueError):
             database.delete_account(self.path,"Expenses:Food")
+
+    def test_rule_can_match_without_filters(self):
+        self.rule()
+        with database.connect(self.path) as db:
+            db.execute("DELETE FROM rules")
+        automation.save_rule(self.path, MultiDict({
+            "name": "All transactions", "mode": "suggest", "enabled": "on",
+            "source": "", "currency": "", "direction": "any",
+            "source_account": "Assets:Bank", "target_account": "Expenses:Food",
+            "source_sign": "negative",
+        }))
+        saved = automation.rules(self.path)[0]
+        self.assertEqual(saved["definition"]["conditions"], [])
+        self.assertTrue(automation.matches(saved, self.record("match-all")))
 
     def test_prediction_queue_actions_and_incomplete_draft(self):
         for i in range(3):
@@ -126,6 +151,28 @@ class ExpandedWorkflows(unittest.TestCase):
         self.assertEqual(json.loads(database.get_record(self.path,"human")["accounting_json"])[0]["account"],"Assets:Bank")
         self.assertEqual({p:p.read_text() for p in paths},originals)
         self.assertEqual(len(learning.load_examples(self.path)),1)
+
+    def test_account_merge_updates_references_and_ledger(self):
+        paths, extra = self.ledger_setup()
+        database.save_account(self.path, "Assets:Wallet", "USD", "", "2020-01-01")
+        database.save_account(self.path, "Assets:Bank:Saving", "USD", "", "2020-01-01")
+        self.confirm_example("merged")
+        self.rule()
+        ledger.export_all(self.path, self.app.config["ACCOUNTS_PATH"], self.app.config["POSTS_PATH"])
+        response = self.client.post("/accounts/merge", data={"source": "Assets:Bank", "destination": "Assets:Wallet", "name": "Assets:Wallet", "currency": "USD"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual({a["name"] for a in database.get_accounts(self.path)}, {"Assets:Wallet", "Assets:Bank:Saving", "Expenses:Food", "Expenses:Other"})
+        self.assertEqual(json.loads(database.get_record(self.path, "merged")["accounting_json"])[0]["account"], "Assets:Wallet")
+        self.assertEqual(automation.rules(self.path)[0]["definition"]["source_account"], "Assets:Wallet")
+        self.assertNotIn("open Assets:Bank USD", extra.read_text())
+        self.assertIn("Assets:Wallet", extra.read_text())
+        self.assertIn("2020-01-01 open Assets:Wallet USD", self.app.config["ACCOUNTS_PATH"].read_text())
+
+    def test_account_merge_allows_empty_currency(self):
+        response = self.client.post("/accounts/merge", data={"source": "Assets:Bank", "destination": "Expenses:Food", "name": "Assets:Merged", "currency": ""})
+        self.assertEqual(response.status_code, 302)
+        merged = next(account for account in database.get_accounts(self.path) if account["name"] == "Assets:Merged")
+        self.assertIsNone(merged["currency"])
 
     def test_prediction_error_preserves_edited_values(self):
         for i in range(3):

@@ -1,5 +1,7 @@
 <details class="transaction-filters" {% if filters.get('conditions') or filters.get('direction','any') != 'any' %}open{% endif %}>
 <summary>Filter by parsed fields or amount</summary>
+<label>Account (posting)<select name="account"><option value="">Any account</option>{% for value, label in account_options %}<option value="{{ value }}" {% if filters.get('account') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Account (posting)<select name="posting_account"><option value="">Any account</option>{% for value, label in account_options %}<option value="{{ value }}" {% if filters.get('posting_account') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
 <label>Combine filters<select name="match_mode"><option value="all" {% if filters.get('match_mode') != 'any' %}selected{% endif %}>All filters (AND)</option><option value="any" {% if filters.get('match_mode') == 'any' %}selected{% endif %}>Any filter (OR)</option></select></label>
 <div id="rule-conditions">{% for condition in filters.get('conditions',[]) %}{% include 'rule_condition.html' %}{% else %}{% set condition={'field':'*','operator':'contains','pattern':''} %}{% include 'rule_condition.html' %}{% endfor %}</div>
 <button type="button" onclick="addRuleCondition()">+ Add filter</button>

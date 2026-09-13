@@ -1,18 +1,19 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">ON DEMAND, ON THIS DEVICE</p><h1>Predictions</h1>
-<p class="muted">Scan pending transactions using current rules and your confirmed decisions.</p></div>
+<p class="muted">Review suggestions generated only by your confirmed decisions.</p></div>
 <form method="post" action="{{ url_for('run_predictions') }}"><button class="primary">Run predictions now</button></form></div>
 <div class="notice">Review one prediction at a time. Suggestions stay unsaved until you choose an action. Resolve confirms a balanced transaction and teaches the model; Save draft keeps your work for later.</div>
 {% if scan %}
 <div class="summary-strip"><span>{{ scan.total }} pending records scanned</span><span>{{ scan.results|length }} suggestions remaining</span><span>{{ scan.skipped }} without a suggestion</span></div>
 {% if item %}{% set selected=item.record %}
 <section class="panel prediction-review review-current">
-<p class="eyebrow">{{ 'Rule match' if item.kind == 'rule' else 'Learned suggestion' }} · {{ position+1 }} / {{ scan.results|length }}</p>
+<p class="eyebrow">MODEL SUGGESTION · {{ position+1 }} / {{ scan.results|length }}</p><small>Learned suggestion from confirmed decisions</small>
 <h2>{{ selected.description }}</h2><p>{{ selected.transaction_date }} · {{ selected.source }} · <b>{{ selected.amount }} {{ selected.currency }}</b></p>
+{% set prediction_payload = json.loads(selected.payload) %}<p class="muted">Counterparty: {{ prediction_payload.get('counterparty') or 'Not provided' }} · Payment method: {{ prediction_payload.get('payment_method') or 'Not provided' }}</p>
 <p>{{ item.reason }}</p>{% if item.matched_fields %}<p class="muted">Matching evidence: {{ item.matched_fields|join(', ') }}</p>{% endif %}
 {% if item.accounts_only %}<div class="notice">Accounts only: check and fill amounts, including any fees or currency conversions.</div>{% endif %}
-<details><summary>Parsed transaction details</summary><dl>{% for key,value in json.loads(selected.payload).items() if value is not none and value != '' %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>
+<details><summary>Parsed transaction details</summary><dl>{% for key,value in prediction_payload.items() if value is not none and value != '' %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>
 <form method="post" action="{{ url_for('save_record',record_id=selected.record_id) }}">
 <input type="hidden" name="return_tab" value="predictions">
 <input type="hidden" name="next_record" value="{{ scan.results[position+1].record.record_id if position+1 < scan.results|length else '' }}">
@@ -26,7 +27,7 @@
 <button type="button" onclick="addPosting('prediction-postings',this)">+ Add posting</button>
 <div class="save-row"><button class="resolve" name="status" value="resolved">Resolve transaction</button><button name="status" value="pending">Save draft</button><button name="status" value="held">Hold</button><button name="status" value="ignored">Ignore</button></div>
 </form>
-<nav class="review-footer actions">{% if position > 0 %}<a class="button" href="{{ url_for('index',tab='predictions',run=1,record=scan.results[position-1].record.record_id) }}">Previous</a>{% endif %}<span>{{ position+1 }} / {{ scan.results|length }}</span>{% if position+1 < scan.results|length %}<a class="button" href="{{ url_for('index',tab='predictions',run=1,record=scan.results[position+1].record.record_id) }}">Next</a>{% endif %}</nav>
+<nav class="review-footer actions">{% if position > 0 %}<a class="button" href="{{ url_for('index',tab='predictions',record=scan.results[position-1].record.record_id) }}">Previous</a>{% endif %}<span>{{ position+1 }} / {{ scan.results|length }}</span>{% if position+1 < scan.results|length %}<a class="button" href="{{ url_for('index',tab='predictions',record=scan.results[position+1].record.record_id) }}">Next</a>{% endif %}</nav>
 </section>
 {% else %}<section class="panel"><h2>No suggestions to review</h2><p>Confirm more similar transactions or add account rules. Saved drafts are available in Transactions; held items remain in the review inbox.</p></section>{% endif %}
 {% endif %}
@@ -37,11 +38,12 @@
 {% for item in training %}<tr><td>{{ item.source }}</td><td>{{ item.count }}</td><td>{{ item.fields|join(', ') }}</td></tr>{% else %}<tr><td colspan="3">No usable confirmed examples yet. Confirm transactions to teach the model.</td></tr>{% endfor %}
 </tbody></table></div></section>
 <section class="panel spaced"><h2>How predictions work</h2>
-<p>Suggestions run when you open an eligible pending transaction or press Run predictions now. Full-transaction rules run first. Account rules prefill their designated fields and combine with model suggestions. Otherwise, the model compares both description and counterparty, payment method/type, category, notes, tags, amounts, installment details, fees, exchange rates, currencies, and original CSV columns.</p>
+<p>Suggestions run when you press Run predictions now or reopen this tab after a scan. The model compares description and counterparty, payment method/type, category, notes, tags, amounts, installment details, fees, exchange rates, currencies, and original CSV columns.</p>
 <p>Sources are kept separate. Field weights start with stronger emphasis on descriptive fields. As different account choices accumulate for a source, fields that distinguish those choices receive more weight. Missing fields do not count as matches. Repeated copies in original CSV columns are suppressed and their total influence is capped.</p>
 <p>Dates contribute weekday, month and day-of-month patterns; time contributes time of day. Numbers use relative closeness. Text uses normalized words and Japanese character pairs. Transaction IDs, source file paths and row numbers are excluded. Timing, balances, and amounts alone cannot establish an account suggestion.</p>
 <p>The nearest examples must score at least 65% similarity. Voting includes examples within eight percentage points of the strongest match, with at least three supporting the winning account layout and 80% weighted agreement. Agreement is not a probability of correctness.</p>
 <p>Only human-confirmed decisions train the model. Corrections replace the saved example; rules and automatic resolutions never train themselves. Parsed-data snapshots are stored alongside the confirmed account layout. Existing drafts and linked events are not predicted.</p>
 <p>Simple two-account matches can fill balanced amounts. Fees, splits, and conversions can receive account-layout suggestions, but their amounts remain blank for you to enter. Every resolved transaction still needs valid accounts, currencies and balanced postings.</p>
-<a href="{{ url_for('index',tab='rules') }}">Manage rules and learning preferences →</a></section>
+<form id="learning-preferences" method="post" action="{{ url_for('learning') }}"><label class="inline-check"><input type="checkbox" name="enabled" {% if learning_enabled %}checked{% endif %}> Show model suggestions</label><button>Save preference</button> <button name="clear" value="1" onclick="return confirm('Forget all learned examples? Transactions and rules will remain.')">Forget learned examples</button></form></section>
+<a href="{{ url_for('index',tab='rules') }}">Manage matching rules</a></section>
 {% endblock %}

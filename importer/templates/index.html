@@ -16,9 +16,6 @@
                                         value="{{ account['currency'] or '' }}"></label><label>Description<input
                                         name="description"
                                         value="{{ account['description'] }}"></label><button>Save</button></form>
-                            <form method="post" action="{{ url_for('remove_account') }}"
-                                onsubmit="return confirm('Delete this account?')"><input type="hidden" name="name"
-                                    value="{{ account['name'] }}"><button title="Delete account">Delete</button></form>
                         </div>{% else %}<p class="empty">No accounts yet.</p>{% endfor %}</div>
                     <form class="form-card account-add-row" method="post" action="{{ url_for('save_account') }}">
                         <h2>Add account</h2><label>Full account path<input name="name" placeholder="Assets:Japan:PayPay"
@@ -27,6 +24,9 @@
                                 placeholder="JPY"></label><label>Description<textarea name="description"
                                 rows="3"></textarea></label><button class="primary">Save account</button>
                     </form>
+                            <form class="form-card account-add-row" method="post" action="{{ url_for('merge_accounts') }}" onsubmit="return confirm('Merge these accounts into the new account?')">
+                                <h2>Merge accounts</h2><label>First account<select name="source" required onchange="updateMergeDefaults(this.form)"><option value="">Choose account</option>{% for account in accounts %}<option value="{{ account['name'] }}" data-currency="{{ account['currency'] or '' }}" data-open-date="{{ account['open_date'] }}">{{ account['name'] }}</option>{% endfor %}</select></label><label>Second account<select name="destination" required onchange="updateMergeDefaults(this.form)"><option value="">Choose account</option>{% for account in accounts %}<option value="{{ account['name'] }}" data-currency="{{ account['currency'] or '' }}" data-open-date="{{ account['open_date'] }}">{{ account['name'] }}</option>{% endfor %}</select></label><label>New account name<input name="name" required></label><label>Currency<input name="currency"></label><label>Opening date<input name="open_date" type="date" readonly></label><button class="primary">Merge accounts</button>
+                            </form>
                 </div>
             </section>
             {% elif tab == 'sync' %}
@@ -181,6 +181,7 @@
                             or '—' }} {{ record['currency'] or '' }}<small>{{ payload.get('balance') or '' }}
                                 balance</small></span><span class="status">{{ 'LINKED EVENT #' ~ record_groups[record['record_id']] if record['record_id'] in record_groups else record['status'] }}</span></a>{% else %}<p
                         class="empty">No records match this view.</p>{% endfor %}
+                    {% if tab == 'search' and page_count > 1 %}<nav class="pagination" aria-label="Transaction pages">{% if page > 1 %}<a href="{{ page_url(page - 1) }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ page_count }}</span>{% if page < page_count %}<a href="{{ page_url(page + 1) }}">Next</a>{% endif %}</nav>{% endif %}
                 </div>
                 <div class="detail-panel">{% if tab == 'search' %}<div id="bulk-interpretation-panel" hidden>{% include 'bulk_interpretation.html' %}</div>{% endif %}<div id="single-interpretation-panel">{% if selected %}{% set payload = json.loads(selected['payload']) %}<p
                         class="eyebrow">ACCOUNTING INTERPRETATION</p>

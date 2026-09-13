@@ -1,4 +1,25 @@
-let lastSearchCheckbox = null; function addPosting(target, button) {
+let lastSearchCheckbox = null; function updateMergeDefaults(form) {
+  const source = form.elements.source.selectedOptions[0];
+  const destination = form.elements.destination.selectedOptions[0];
+  const selected = destination?.value ? destination : source;
+  if (!selected?.value) return;
+  if (!form.elements.name.value || form.elements.name.dataset.auto === 'true') {
+    form.elements.name.value = selected.value;
+    form.elements.name.dataset.auto = 'true';
+  }
+  if (!form.elements.currency.value || form.elements.currency.dataset.auto === 'true') {
+    form.elements.currency.value = selected.dataset.currency || '';
+    form.elements.currency.dataset.auto = 'true';
+  }
+  if (!form.dataset.mergeDefaultsBound) {
+    form.elements.name.addEventListener('input', () => form.elements.name.dataset.auto = 'false');
+    form.elements.currency.addEventListener('input', () => form.elements.currency.dataset.auto = 'false');
+    form.dataset.mergeDefaultsBound = 'true';
+  }
+  const dates = [source?.dataset.openDate, destination?.dataset.openDate].filter(Boolean).sort();
+  form.elements.open_date.value = dates[0] || '';
+}
+function addPosting(target, button) {
   const container = document.getElementById(target) || button?.closest('form')?.querySelector('[id$="postings"]');
   if (!container) return;
   const source = container.querySelector('.posting');
@@ -68,7 +89,7 @@ async function quickCategorize(button) {
 function updateCondition(select) {
   const input = select.closest('.rule-condition').querySelector('[name="condition_pattern"]');
   const needsValue = !['empty', 'exists'].includes(select.value);
-  input.required = needsValue && !!select.closest(".rule-form");
+  input.required = false;
   input.readOnly = !needsValue;
   input.placeholder = needsValue ? 'Matching value' : 'No value needed';
 }

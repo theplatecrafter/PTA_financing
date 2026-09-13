@@ -145,12 +145,14 @@ def save_rule(path, form):
         fields, operators, patterns = [form.getlist("condition_" + key) for key in ("field", "operator", "pattern")]
         if not (len(fields) == len(operators) == len(patterns)):
             raise ValueError("Complete every filter.")
-        filters = [dict(field=f.strip(), operator=o, pattern=p.strip()) for f, o, p in zip(fields, operators, patterns)]
+        filters = [dict(field=f.strip(), operator=o, pattern=p.strip())
+                   for f, o, p in zip(fields, operators, patterns)
+                   if f.strip() and (p.strip() or o in ("exists", "empty"))]
     else:
-        filters = conditions(definition)
+        filters = conditions(definition) if any(definition.get(key) for key in ("field", "operator", "pattern")) else []
     allowed = {"*": "Any field", **dict(available_fields(path))}
-    if not name or not filters:
-        raise ValueError("Give the rule a name and at least one filter.")
+    if not name:
+        raise ValueError("Give the rule a name.")
     for condition in filters:
         if condition["field"] not in allowed or condition["operator"] not in OPERATORS:
             raise ValueError("Choose a parsed field and a valid match type for every filter.")
@@ -272,6 +274,11 @@ def apply(path, record_ids=None):
     return count
 
 
+def scan_rules(path):
+    """Return pending records matched by transaction rules, without changing them."""
+    return preview(path)
+
+
 def undo(path, log_id):
     with database.connect(path) as db:
         log = db.execute('SELECT * FROM automation_log WHERE id=? AND undone=0', (log_id,)).fetchone()
@@ -347,10 +354,7 @@ def suggestion(path, row, examples=None, profiles=None):
             except ValueError:
                 return None
             return {'postings': postings, 'reason': 'Rule: ' + rule['name'], 'kind': 'rule'}
-    with database.connect(path) as db:
-        setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
-        enabled = not setting or setting[0] != "false"
-    predicted = learning.predict(path, row, examples if examples is not None else learning.load_examples(path), profiles) if enabled else None
+    predicted = model_suggestion(path, row, examples, profiles)
     hints = account_hints(path, row)
     if not hints:
         return predicted
@@ -372,9 +376,20 @@ def suggestion(path, row, examples=None, profiles=None):
     if not predicted or "fee" in hints or len({p["account"] for p in postings}) != len(postings):
         for p in postings:
             p["amount"] = ""
-    return dict(postings=postings, kind="rule", accounts_only=any(not p["amount"] for p in postings),
-                reason="Account rules: " + ", ".join(h["name"] for h in hints.values()) +
+    return dict(postings=postings, kind=predicted["kind"] if predicted else "rule", accounts_only=any(not p["amount"] for p in postings),
+                reason=("Model suggestion with account rules: " if predicted else "Account rules: ") + ", ".join(h["name"] for h in hints.values()) +
                 ("; remaining fields from learned suggestion." if predicted else ". Confirm amounts before resolving."))
+
+
+def model_suggestion(path, row, examples=None, profiles=None):
+    if not row or row['status'] != 'pending' or (row['accounting_json'] and json.loads(row['accounting_json'])) or database.get_group_id(path, row['record_id']):
+        return None
+    with database.connect(path) as db:
+        setting = db.execute("SELECT value FROM settings WHERE key='learning_enabled'").fetchone()
+        enabled = not setting or setting[0] != "false"
+    if not enabled:
+        return None
+    return learning.predict(path, row, examples if examples is not None else learning.load_examples(path), profiles)
 
 
 def account_hints(path, row):
@@ -398,7 +413,7 @@ def scan_pending(path):
     profiles = {source: learning.fit_weights([e for e in examples if e["source"] == source])
                 for source in {e["source"] for e in examples}}
     for row in pending:
-        prediction = suggestion(path, row, examples, profiles)
+        prediction = model_suggestion(path, row, examples, profiles)
         if prediction:
             results.append({"record": row, **prediction})
     return {"results": results, "total": len(pending), "skipped": len(pending) - len(results)}

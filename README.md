@@ -4,7 +4,7 @@ Import statements, organize transactions, and keep a balanced plain-text
 Beancount ledger. SQLite stores source observations and review decisions.
 No financial data is sent to a hosted prediction service.
 
-## Run in Debian / WSL
+## Run in Linux
 
 ```sh
 cd /home/hans/finances
@@ -14,7 +14,10 @@ pip install -r dependencies.txt
 python -m importer.app
 ```
 
-Open http://127.0.0.1:50001 for the importer. The Fava reports tab embeds Fava
+Open http://127.0.0.1:50001 for the importer. If Windows cannot reach the WSL
+localhost socket, start it with `HOST=0.0.0.0 venv/bin/python -m importer.app`
+and open `http://<WSL-IP>:50001` from Windows; get the address with `hostname -I`.
+The Fava reports tab embeds Fava
 at /fava on the same server and includes an open-in-new-tab button. No second
 server is required. Set PORT=5001 to keep using the old port. Alternatively, run
 `fava main.beancount` in a second terminal for reports at

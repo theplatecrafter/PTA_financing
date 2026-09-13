@@ -1,4 +1,5 @@
 """One literal filter engine for transaction search and unsaved rule previews."""
+import json
 from decimal import Decimal, InvalidOperation
 from . import automation, database
 
@@ -22,7 +23,7 @@ def definition(form):
             except InvalidOperation:
                 raise ValueError("Numeric comparisons need a finite number.")
         filters.append(dict(field=field, operator=op, pattern=pattern.strip()))
-    result = {k: form.get(k, "") for k in ("source", "currency", "minimum", "maximum")}
+    result = {k: form.get(k, "") for k in ("source", "currency", "posting_account", "minimum", "maximum")}
     result.update(conditions=filters, match_mode=form.get("match_mode", "all"),
                   direction=form.get("direction", "any"))
     if result["match_mode"] not in ("all", "any") or result["direction"] not in ("any", "positive", "negative"):
@@ -40,6 +41,8 @@ def definition(form):
 
 def matches(d, row):
     if d.get("source") and d["source"] != row["source"] or d.get("currency") and d["currency"] != row["currency"]:
+        return False
+    if d.get("posting_account") and not any(p.get("account") == d["posting_account"] for p in json.loads(row["accounting_json"] or "[]")):
         return False
     if d.get("direction", "any") != "any" or d.get("minimum") or d.get("maximum"):
         try:
@@ -60,3 +63,17 @@ def search(path, form):
     d = definition(form)
     rows = database.list_records(path, form.get("status", "all"), form.get("q", ""))
     return [r for r in rows if matches(d, r)]
+
+
+def search_page(path, form, page=1, page_size=100):
+    d = definition(form)
+    offset = (page - 1) * page_size
+    matched = 0
+    result = []
+    for row in database.record_batches(path, form.get("status", "all"), form.get("q", ""), page_size):
+        if not matches(d, row):
+            continue
+        if matched >= offset and len(result) < page_size:
+            result.append(row)
+        matched += 1
+    return result, matched
